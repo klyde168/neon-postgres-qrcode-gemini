@@ -1,48 +1,45 @@
 // app/components/QrScanner.tsx
 import { useState, useRef, useEffect, useCallback } from 'react';
-import jsQR from 'jsqr';
-import { useFetcher } from '@remix-run/react'; // Import useFetcher
+import jsQR, { QRCode } from 'jsqr'; // Import QRCode type for better typing
+import { useFetcher } from '@remix-run/react';
 
 export default function QrScanner() {
   const [scannedData, setScannedData] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
-  const [cameraPermissionError, setCameraPermissionError] = useState<boolean>(false); // New state for specific camera errors
+  const [cameraPermissionError, setCameraPermissionError] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null); // To store MediaStream for stopping
-  const fetcher = useFetcher<{success: boolean; message?: string; error?: string; id?: number}>(); // Typed fetcher
+  const streamRef = useRef<MediaStream | null>(null);
+  const fetcher = useFetcher<{success: boolean; message?: string; error?: string; id?: number}>();
 
   const startScan = async () => {
+    console.log("Attempting to start scan...");
     setScannedData(null);
     setError(null);
-    setCameraPermissionError(false); // Reset camera error state
-    fetcher.data = undefined; // Clear previous fetcher data
-    setIsScanning(true); // Set isScanning to true to show the video element
+    setCameraPermissionError(false);
+    fetcher.data = undefined;
+    setIsScanning(true);
 
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }, // Prefer rear camera
+          video: { facingMode: 'environment' },
         });
-        streamRef.current = stream; // Store stream
+        console.log("Camera stream obtained.");
+        streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          // videoRef.current.setAttribute('playsinline', 'true'); // Already in JSX
-          // videoRef.current.setAttribute('autoplay', 'true'); // Already in JSX
-          // videoRef.current.muted = true; // Already in JSX
-
-          // Attempt to play the video and catch errors
           try {
             await videoRef.current.play();
-            // Successfully started playing, now start the tick
+            console.log("Video playback started.");
             requestAnimationFrame(tick);
           } catch (playError) {
             console.error('影片播放錯誤 (Video play error):', playError);
             setError('無法播放相機畫面。請檢查相機是否被其他應用程式使用。 (Cannot play camera feed. Check if camera is used by another app.)');
-            setCameraPermissionError(true); // Mark as camera related error
-            setIsScanning(false); // Stop scanning state if play fails
-            stopScan(); // Ensure camera resources are released
+            setCameraPermissionError(true);
+            setIsScanning(false);
+            stopScan();
           }
         }
       } catch (err) {
@@ -64,99 +61,106 @@ export default function QrScanner() {
             }
         }
         setError(errorMessage);
-        setCameraPermissionError(true); // Mark as camera related error
+        setCameraPermissionError(true);
         setIsScanning(false);
       }
     } else {
+      console.error("navigator.mediaDevices.getUserMedia not supported.");
       setError('您的瀏覽器不支援相機存取功能。 (Your browser does not support camera access.)');
-      setCameraPermissionError(true); // Mark as camera related error
+      setCameraPermissionError(true);
       setIsScanning(false);
     }
   };
 
   const stopScan = useCallback(() => {
+    console.log("Stopping scan...");
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      console.log("Camera stream stopped.");
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
-      // videoRef.current.load(); // Sometimes needed to reset video element fully
     }
     setIsScanning(false);
   }, []);
 
 
   const tick = () => {
-    // Ensure scanning is active, stream exists, and refs are valid
     if (!isScanning || !streamRef.current || !videoRef.current || !canvasRef.current) {
-        return;
+      // console.log("Tick: Aborting, conditions not met.", { isScanning, streamRefExists: !!streamRef.current, videoRefExists: !!videoRef.current, canvasRefExists: !!canvasRef.current });
+      return;
     }
 
+    // console.log("Tick: Processing frame.");
     if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Optimize for frequent reads
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       if (ctx) {
         canvas.height = video.videoHeight;
         canvas.width = video.videoWidth;
 
-        // Ensure canvas dimensions are valid before drawing and getting image data
         if (canvas.width === 0 || canvas.height === 0) {
-            if (isScanning && streamRef.current) requestAnimationFrame(tick); // Retry next frame if dimensions are not yet valid
+            // console.log("Tick: Canvas dimensions are zero, retrying next frame.");
+            if (isScanning && streamRef.current) requestAnimationFrame(tick);
             return;
         }
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         try {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            // Check if imageData is not all black (which can happen briefly on camera start)
             if (imageData.data.some(channel => channel !== 0)) {
-                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, {
                   inversionAttempts: 'dontInvert',
                 });
 
-                if (code && code.data) { // Ensure code.data exists
-                  setScannedData(code.data);
-                  stopScan(); // Stop scanning once data is found
-                  return; // Stop the tick loop
+                // console.log("jsQR raw result:", code); // Log the entire result from jsQR
+
+                if (code) { // Check if jsQR returned an object (found something)
+                  console.log("QR Code object found by jsQR. Data content:", code.data, "| Type of data:", typeof code.data);
+                  if (code.data && code.data.trim() !== "") { // Check if data is truthy AND not just whitespace
+                    console.log("Setting scanned data state with:", code.data);
+                    setScannedData(code.data);
+                    stopScan();
+                    return;
+                  } else {
+                    console.log("QR Code found by jsQR, but data is empty, whitespace, or falsy. Not setting state.");
+                  }
+                } else {
+                  // console.log("jsQR did not find a QR code in this frame.");
                 }
+            } else {
+              // console.log("Tick: Image data is all black, skipping jsQR.");
             }
         } catch (e) {
-            // getImageData might throw if canvas is too small or video not fully loaded
-            console.warn("無法獲取影像資料進行掃描 (Could not get image data for scanning):", e);
+            console.warn("無法獲取影像資料或解碼錯誤 (Could not get image data or decoding error):", e);
         }
       }
     }
-    // Continue ticking only if scanning is active and stream exists
     if (isScanning && streamRef.current) {
         requestAnimationFrame(tick);
     }
   };
 
-   // Effect for cleanup on unmount
    useEffect(() => {
-    // The tick is now started within startScan after successful video play
-    // This effect primarily handles cleanup
     return () => {
       stopScan();
     };
-  }, [stopScan]); // stopScan is a dependency
+  }, [stopScan]);
 
 
   return (
     <div className="flex flex-col items-center space-y-6 w-full">
-      {/* Video and Canvas Container */}
       <div className="w-full max-w-sm aspect-[4/3] bg-slate-700 rounded-lg overflow-hidden shadow-lg relative border-2 border-slate-600">
         <video
           ref={videoRef}
-          className={`w-full h-full object-cover ${isScanning ? 'block' : 'hidden'}`} // Show video only when isScanning
+          className={`w-full h-full object-cover ${isScanning ? 'block' : 'hidden'}`}
           muted
-          autoPlay // Added autoPlay
-          playsInline // For iOS Safari
+          autoPlay
+          playsInline
         />
-        {/* Initial placeholder / Error message when not scanning */}
         {(!isScanning && !scannedData) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-4 text-center">
                 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-camera-off mb-3 opacity-50">
@@ -175,18 +179,15 @@ export default function QrScanner() {
                 )}
             </div>
         )}
-        {/* Visual scanning indicator */}
         {isScanning && (
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-3/4 h-3/4 border-4 border-dashed border-purple-500 opacity-75 rounded-lg animate-pulse"></div>
             </div>
         )}
-        {/* Hidden canvas for jsQR */}
         <canvas ref={canvasRef} className="hidden" />
       </div>
 
-      {/* Control Buttons */}
-      {!isScanning && !scannedData ? ( // Initial state or after an error/stop without result
+      {!isScanning && !scannedData ? (
         <button
           onClick={startScan}
           className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-emerald-500 transition-all duration-150 ease-in-out"
@@ -194,14 +195,14 @@ export default function QrScanner() {
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-scan-line inline-block mr-2 align-middle"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
           開始掃描 (Start Scan)
         </button>
-      ) : !isScanning && scannedData ? ( // Scanned data is available, give option to rescan
+      ) : !isScanning && scannedData ? (
         <button
-            onClick={startScan} // Re-initiates the scan
+            onClick={startScan}
             className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-amber-500 transition-all duration-150 ease-in-out"
         >
             重新掃描 (Rescan)
         </button>
-      ) : ( // isScanning is true
+      ) : (
         <button
           onClick={stopScan}
           className="bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-rose-500 transition-all duration-150 ease-in-out"
@@ -211,7 +212,6 @@ export default function QrScanner() {
         </button>
       )}
 
-      {/* Display general errors, but not if it's a camera permission error that's already handled by the placeholder */}
       {error && !cameraPermissionError && (
         <div className="mt-4 p-4 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg text-center w-full max-w-sm">
           <p className="font-semibold">錯誤 (Error)：</p>
@@ -219,7 +219,6 @@ export default function QrScanner() {
         </div>
       )}
 
-      {/* Scanned Data Display and Actions */}
       {scannedData && (
         <div className="mt-4 p-6 bg-slate-700 rounded-lg shadow-inner w-full max-w-sm text-center">
           <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果 (Scanned Result)：</h3>
@@ -240,7 +239,6 @@ export default function QrScanner() {
             >
                 複製結果 (Copy Result)
             </button>
-            {/* Use fetcher.Form for submitting to the action */}
             <fetcher.Form method="post" action="/scan" className="w-full sm:w-auto" onSubmit={(e) => { if (!scannedData) e.preventDefault(); }}>
                  <input type="hidden" name="scannedData" value={scannedData || ""} />
                  <button
@@ -255,7 +253,6 @@ export default function QrScanner() {
         </div>
       )}
 
-      {/* Fetcher data display (for save operation feedback) */}
       {fetcher.data && (
         <div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${fetcher.data.success ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300' : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'}`}>
             <p>{fetcher.data.message || fetcher.data.error}</p>
