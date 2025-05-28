@@ -333,54 +333,21 @@ export default function GeneratePage() {
 
     addUiDebugMessage(`輪詢檢查更新 - lastKnownId: ${lastKnownScannedId}`);
 
-    // 創建一個隱藏的表單來提交請求，確保正確路由
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = window.location.pathname;
-    form.style.display = 'none';
+    // 使用專用的 API 端點來檢查更新
+    const apiUrl = `/api/check-updates?lastKnownId=${lastKnownScannedId || 0}`;
+    addUiDebugMessage(`輪詢請求 URL: ${apiUrl}`);
     
-    // 添加 intent 字段
-    const intentInput = document.createElement('input');
-    intentInput.type = 'hidden';
-    intentInput.name = 'intent';
-    intentInput.value = 'check-for-updates';
-    form.appendChild(intentInput);
-    
-    // 添加 lastKnownId 字段
-    const idInput = document.createElement('input');
-    idInput.type = 'hidden';
-    idInput.name = 'lastKnownId';
-    idInput.value = lastKnownScannedId?.toString() || '0';
-    form.appendChild(idInput);
-    
-    // 添加標記字段表示這是 AJAX 請求
-    const ajaxInput = document.createElement('input');
-    ajaxInput.type = 'hidden';
-    ajaxInput.name = '_ajax';
-    ajaxInput.value = 'true';
-    form.appendChild(ajaxInput);
-    
-    document.body.appendChild(form);
-    
-    // 使用 FormData 發送請求
-    const formData = new FormData(form);
-    
-    addUiDebugMessage(`輪詢請求 URL: ${window.location.pathname}`);
-    addUiDebugMessage(`輪詢表單數據: intent=${formData.get('intent')}, lastKnownId=${formData.get('lastKnownId')}`);
-    
-    fetch(window.location.pathname, {
-      method: 'POST',
-      body: formData,
+    fetch(apiUrl, {
+      method: 'GET',
       headers: {
-        'X-Requested-With': 'XMLHttpRequest', // 標記為 AJAX 請求
-      }
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      cache: 'no-cache',
     })
     .then(response => {
       addUiDebugMessage(`輪詢響應狀態: ${response.status}`);
       addUiDebugMessage(`輪詢響應 Content-Type: ${response.headers.get('content-type')}`);
-      
-      // 清理表單
-      document.body.removeChild(form);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -401,7 +368,7 @@ export default function GeneratePage() {
       addUiDebugMessage(`輪詢結果: hasUpdate=${data.hasUpdate}, latestId=${data.latestScanId}, lastKnown=${data.lastKnownId}`);
       
       if (data.debug) {
-        addUiDebugMessage(`輪詢調試: 查詢行數=${data.debug.queryRows}, 最新資料="${data.debug.latestData}"`);
+        addUiDebugMessage(`輪詢調試: 查詢行數=${data.debug.queryRows}, 最新資料="${data.debug.latestData}", API ID=${data.debug.apiExecutionId}`);
       }
       
       if (data.error) {
@@ -418,16 +385,13 @@ export default function GeneratePage() {
       }
     })
     .catch(err => {
-      // 確保表單被清理
-      if (form.parentNode) {
-        document.body.removeChild(form);
-      }
-      
       addUiDebugMessage(`輪詢檢查錯誤: ${err.message}`, true);
       
-      // 如果是 JSON 解析錯誤，可能是服務器返回 HTML
+      // 提供更多診斷信息
       if (err.message.includes('Unexpected token')) {
-        addUiDebugMessage("服務器返回 HTML 而非 JSON，這可能是路由問題。檢查服務器控制台是否有錯誤。", true);
+        addUiDebugMessage("API 返回非 JSON 格式，檢查 /api/check-updates 路由是否正確設置", true);
+      } else if (err.message.includes('404')) {
+        addUiDebugMessage("API 端點不存在，請確認 app/routes/api.check-updates.ts 檔案存在", true);
       }
     });
   }, [autoReloadEnabled, forceUuidMode, lastKnownScannedId, autoRefreshFromLatestScan, addUiDebugMessage]);
