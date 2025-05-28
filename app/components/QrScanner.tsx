@@ -24,6 +24,7 @@ export default function QrScanner() {
   const [debugMessages, setDebugMessages] = useState<string[]>([]);
   const frameCounter = useRef(0);
   const animationFrameId = useRef<number | null>(null);
+  const [autoSaveAttempted, setAutoSaveAttempted] = useState<boolean>(false); // 新增：追蹤自動儲存嘗試
 
   const addDebugMessage = useCallback((message: string, isError: boolean = false) => {
     const fullMessage = `[SCANNER ${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
@@ -31,6 +32,25 @@ export default function QrScanner() {
     else console.log(fullMessage);
     setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
   }, []);
+
+  // 監控 scannedData 變化
+  useEffect(() => {
+    addDebugMessage(`scannedData 變化: "${scannedData?.substring(0,50)}..." (length: ${scannedData?.length || 0})`);
+    if (scannedData) {
+      setAutoSaveAttempted(false); // 重置自動儲存標記
+      addDebugMessage("重置自動儲存標記，準備進行自動儲存");
+    }
+  }, [scannedData, addDebugMessage]);
+
+  // 監控 fetcher 狀態變化
+  useEffect(() => {
+    addDebugMessage(`Fetcher state 變化: ${fetcher.state}`);
+    if (fetcher.state === "submitting") {
+      addDebugMessage("正在提交表單到服務器...");
+    } else if (fetcher.state === "idle") {
+      addDebugMessage("Fetcher 處於閒置狀態");
+    }
+  }, [fetcher.state, addDebugMessage]);
 
   useEffect(() => {
     if (fetcher.data) {
@@ -347,7 +367,8 @@ export default function QrScanner() {
           });
           
           if (code && code.data && code.data.trim() !== "") {
-            addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到 QR Code! Data: "${code.data.substring(0,50)}..."`);
+            addDebugMessage(`✅ Tick #${frameCounter.current}: QR Code 掃描成功! Data: "${code.data.substring(0,50)}..."`);
+            addDebugMessage(`QR Code 詳細信息 - 長度: ${code.data.length}, 類型: ${typeof code.data}`);
             setScannedData(code.data);
             stopScan("qr_code_found");
             return;
@@ -429,40 +450,61 @@ export default function QrScanner() {
           <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果：</h3>
           <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md mb-4">{scannedData}</p>
           
-          {/* 顯示儲存狀態 */}
-          {fetcher.state === "submitting" && (
+          {/* 顯示自動儲存狀態 */}
+          {!autoSaveAttempted && (
+            <div className="mb-4 p-3 bg-orange-700 bg-opacity-50 border border-orange-500 text-orange-300 rounded-lg">
+              <div className="flex items-center justify-center">
+                <svg className="mr-2 h-5 w-5 text-orange-300" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd"/>
+                </svg>
+                ⏳ 準備自動儲存...
+              </div>
+            </div>
+          )}
+          
+          {/* 顯示儲存進行中狀態 */}
+          {autoSaveAttempted && fetcher.state === "submitting" && (
             <div className="mb-4 p-3 bg-blue-700 bg-opacity-50 border border-blue-500 text-blue-300 rounded-lg">
               <div className="flex items-center justify-center">
                 <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                正在自動儲存到資料庫...
+                🚀 正在自動儲存到資料庫...
               </div>
             </div>
           )}
           
           {/* 顯示儲存成功訊息 */}
-          {fetcher.data && fetcher.data.success && (
+          {autoSaveAttempted && fetcher.data && fetcher.data.success && (
             <div className="mb-4 p-3 bg-green-700 bg-opacity-50 border border-green-500 text-green-300 rounded-lg">
               <div className="flex items-center justify-center">
                 <svg className="mr-2 h-5 w-5 text-green-300" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/>
                 </svg>
-                ✅ 已自動儲存到資料庫！
+                ✅ 已自動儲存到資料庫！(ID: {fetcher.data.id})
               </div>
             </div>
           )}
           
           {/* 顯示儲存失敗訊息 */}
-          {fetcher.data && !fetcher.data.success && fetcher.data.error && (
+          {autoSaveAttempted && fetcher.data && !fetcher.data.success && fetcher.data.error && (
             <div className="mb-4 p-3 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg">
               <div className="flex items-center justify-center">
                 <svg className="mr-2 h-5 w-5 text-red-300" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd"/>
                 </svg>
-                ❌ 儲存失敗：{fetcher.data.error}
+                ❌ 自動儲存失敗：{fetcher.data.error}
               </div>
+              <button 
+                onClick={() => {
+                  addDebugMessage("手動重試自動儲存...");
+                  setAutoSaveAttempted(false);
+                }}
+                className="mt-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm"
+              >
+                重試儲存
+              </button>
             </div>
           )}
         </div>
