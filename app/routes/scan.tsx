@@ -1,8 +1,8 @@
 // app/routes/scan.tsx
 import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
-import { Link, json } from "@remix-run/react";
-import QrScanner from "~/components/QrScanner";
-import { pool } from "~/utils/db.server"; // Import the pool
+import { Link, json } from "@remix-run/react"; // Removed useFetcher as it's not used in this file directly for submission
+import QrScanner from "~/components/QrScanner"; // QrScanner will use useFetcher
+import { pool } from "~/utils/db.server";
 
 export const meta: MetaFunction = () => {
   return [
@@ -13,24 +13,35 @@ export const meta: MetaFunction = () => {
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
-  const scannedData = formData.get("scannedData");
+  const scannedDataValue = formData.get("scannedData");
 
-  if (typeof scannedData !== "string" || scannedData.trim() === "") {
-    return json({ success: false, error: "Scanned data is empty or invalid." }, { status: 400 });
+  if (typeof scannedDataValue !== "string" || scannedDataValue.trim() === "") {
+    return json({ success: false, error: "掃描到的資料是空的或無效的。" }, { status: 400 });
   }
+  const scannedData = scannedDataValue;
 
   try {
     const client = await pool.connect();
     try {
-      const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id';
+      const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id, data, scanned_at';
       const res = await client.query(queryText, [scannedData]);
-      return json({ success: true, id: res.rows[0].id, message: "Data saved successfully!" });
+      
+      // 成功寫入資料庫後，設定 localStorage 標記
+      // 注意：這部分程式碼實際上是在伺服器端執行，無法直接操作瀏覽器的 localStorage。
+      // 我們會在客戶端 QrScanner 組件的 fetcher.data 回調中處理 localStorage 的設定。
+      // 因此，action 函數返回成功訊息和新資料的 ID。
+      return json({
+        success: true,
+        id: res.rows[0].id,
+        savedData: res.rows[0].data, // 返回儲存的資料
+        message: "資料已成功儲存到資料庫！"
+      });
     } finally {
       client.release();
     }
   } catch (error) {
-    console.error("Database error:", error);
-    return json({ success: false, error: "Failed to save data to database." }, { status: 500 });
+    console.error("Database error in /scan action:", error);
+    return json({ success: false, error: "儲存資料到資料庫時失敗。" }, { status: 500 });
   }
 }
 
@@ -47,7 +58,7 @@ export default function ScanPage() {
           </p>
         </header>
 
-        <QrScanner /> {/* QrScanner component will handle the submission */}
+        <QrScanner />
 
         <div className="mt-8 text-center">
           <Link
