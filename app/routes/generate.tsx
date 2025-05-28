@@ -1,10 +1,21 @@
 // app/routes/generate.tsx
 import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { Link, useActionData, json, useSubmit, useLoaderData, useRevalidator } from "@remix-run/react"; // Import useRevalidator
-import { useState, useEffect, useRef } from "react";
+import { Link, useActionData, json, useSubmit, useLoaderData, useRevalidator } from "@remix-run/react";
+import { useState, useEffect, useRef, useCallback } from "react"; // Added useCallback here
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
-import { pool } from "~/utils/db.server"; // Import the pool
+import { pool } from "~/utils/db.server";
+
+// Helper for client-side logging to appear in the UI debug log
+const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<string[]>>) => {
+  return (message: string, isError: boolean = false) => {
+    const fullMessage = `[CLIENT ${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
+    if (isError) console.error(fullMessage);
+    else console.log(fullMessage);
+    setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
+  };
+};
+
 
 export const meta: MetaFunction = () => {
   return [
@@ -16,82 +27,86 @@ export const meta: MetaFunction = () => {
 type QrCodeResponse = {
   qrCodeDataUrl?: string | null;
   error?: string | null;
-  sourceText?: string | null; // Text that was encoded
-  intent?: string | null; // To differentiate loader from action, or specific actions
-  timestamp?: number; // For differentiating loader/action data
+  sourceText?: string | null;
+  intent?: string | null;
+  timestamp?: number;
 };
 
-// Loader function: Executes on initial page load and on revalidation
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
+  const loaderExecutionId = randomUUID().substring(0, 8); // Unique ID for this loader execution
+  console.log(`[LOADER ${loaderExecutionId}] Initiated.`);
   let textToEncode: string | null = null;
   let errorMsg: string | null = null;
   let intent = "loader-fetch-latest";
-  const currentTimestamp = Date.now(); // Timestamp for this loader execution
+  const currentTimestamp = Date.now();
 
   try {
     const client = await pool.connect();
+    console.log(`[LOADER ${loaderExecutionId}] Database client connected.`);
     try {
-      // 嘗試獲取最新的掃描資料
-      const latestScanQuery = 'SELECT data FROM scanned_data ORDER BY id DESC LIMIT 1';
+      const latestScanQuery = 'SELECT data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
       const res = await client.query(latestScanQuery);
       if (res.rows.length > 0 && res.rows[0].data) {
         textToEncode = res.rows[0].data;
-        console.log(`[generate loader ${currentTimestamp}] Fetched latest scanned data:`, textToEncode);
+        console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data: "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
       } else {
-        // 如果資料庫為空，則產生一個 UUID
         textToEncode = randomUUID();
         intent = "loader-initial-uuid";
-        console.log(`[generate loader ${currentTimestamp}] No scanned data, generated UUID:`, textToEncode);
+        console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated UUID: "${textToEncode}"`);
       }
     } finally {
       client.release();
+      console.log(`[LOADER ${loaderExecutionId}] Database client released.`);
     }
-  } catch (dbError) {
-    console.error(`[generate loader ${currentTimestamp}] Database error:`, dbError);
+  } catch (dbError: any) {
+    console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
     errorMsg = "讀取最新掃描資料時發生錯誤。";
-    // 發生錯誤時，也產生一個 UUID 作為備用
     textToEncode = randomUUID();
     intent = "loader-db-error-fallback-uuid";
-    console.log(`[generate loader ${currentTimestamp}] DB error, generated fallback UUID:`, textToEncode);
+    console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
   }
 
-  if (!textToEncode) {
+  if (!textToEncode) { // Should not happen due to fallbacks
       textToEncode = randomUUID();
       intent = "loader-final-fallback-uuid";
-      console.log(`[generate loader ${currentTimestamp}] Final fallback UUID:`, textToEncode);
+      console.log(`[LOADER ${loaderExecutionId}] Final fallback UUID: "${textToEncode}"`);
   }
 
+  console.log(`[LOADER ${loaderExecutionId}] Text to encode: "${textToEncode}"`);
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-      errorCorrectionLevel: "H", // Default EC level for loader
-      width: 256, // Default size for loader
-      margin: 2,
+      errorCorrectionLevel: "H", width: 256, margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
+    console.log(`[LOADER ${loaderExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
     return json({ qrCodeDataUrl, error: errorMsg, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
-  } catch (qrErr) {
-    console.error(`[generate loader ${currentTimestamp}] QR Code generation error:`, qrErr);
-    return json({ error: `產生 QR Code 失敗: ${errorMsg || '未知錯誤'}`, qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
+  } catch (qrErr: any) {
+    console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
+    return json({ error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
   }
 }
 
-// Action function: For "Generate New UUID QR Code" button
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
+  const actionExecutionId = randomUUID().substring(0,8);
+  console.log(`[ACTION ${actionExecutionId}] Initiated.`);
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
   let textToEncode: string | null = null;
-  const currentTimestamp = Date.now(); // Timestamp for this action execution
+  const currentTimestamp = Date.now();
+
+  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
 
   if (intent === "generate-uuid-via-action") {
     textToEncode = randomUUID();
-    console.log(`[generate action ${currentTimestamp}] New UUID generated:`, textToEncode);
+    console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
   } else {
-    console.log(`[generate action ${currentTimestamp}] Invalid intent:`, intent);
+    console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
     return json({ error: "無效的操作。", qrCodeDataUrl: null, sourceText: null, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 400 });
   }
 
   const sizeValue = formData.get("size") || "256";
   const errorCorrectionLevelValue = formData.get("errorCorrectionLevel") || "H";
+  console.log(`[ACTION ${actionExecutionId}] QR Params: size=${sizeValue}, ecLevel=${errorCorrectionLevelValue}`);
 
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
@@ -100,9 +115,10 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
+    console.log(`[ACTION ${actionExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
     return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
-  } catch (err) {
-    console.error(`[generate action ${currentTimestamp}] QR Code generation error:`, err);
+  } catch (err: any) {
+    console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
     return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
   }
 }
@@ -111,73 +127,82 @@ export default function GeneratePage() {
   const initialLoaderData = useLoaderData<QrCodeResponse>();
   const actionData = useActionData<QrCodeResponse>();
   const revalidator = useRevalidator();
+  const [debugMessages, setDebugMessages] = useState<string[]>([]);
+  const addUiDebugMessage = useCallback(getUiLogger(setDebugMessages), []); // useCallback is now imported
 
-  // State to hold the data that should currently be displayed
-  // Initialize with loaderData, then update if actionData is newer or present
+
   const [currentDisplayData, setCurrentDisplayData] = useState<QrCodeResponse>(initialLoaderData);
-
   const [qrSize, setQrSize] = useState("256");
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
-  // Effect to update display data when actionData is received (from button click)
+  useEffect(() => {
+    addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}..."`);
+    setCurrentDisplayData(initialLoaderData);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialLoaderData]); // Only run when initialLoaderData identity changes
+
   useEffect(() => {
     if (actionData) {
-      console.log("[generate page] Action data received:", actionData);
-      // Prefer actionData if it's more recent or if loaderData had an error and actionData doesn't
-      if (actionData.timestamp && (!currentDisplayData.timestamp || actionData.timestamp > currentDisplayData.timestamp || currentDisplayData.error)) {
+      addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}..."`);
+      // Always prefer actionData if it exists and is different (based on timestamp)
+      if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
+        addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
+      } else {
+        addUiDebugMessage(`Action data (ts: ${actionData.timestamp}) not newer than current (ts: ${currentDisplayData.timestamp}). No UI update from actionData.`);
       }
     }
-  }, [actionData, currentDisplayData.timestamp, currentDisplayData.error]);
-
-  // Effect to update display data when loaderData changes (initial load or revalidation)
-  useEffect(() => {
-    console.log("[generate page] Loader data received/updated:", initialLoaderData);
-    // Only update from loader if there's no actionData or if loaderData is newer
-    // This handles the initial load and revalidations triggered by storage events
-    if (!actionData || (initialLoaderData.timestamp && (!actionData.timestamp || initialLoaderData.timestamp > actionData.timestamp))) {
-        setCurrentDisplayData(initialLoaderData);
-    }
-  }, [initialLoaderData, actionData]);
+  }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
 
 
-  // Listen for localStorage changes to trigger revalidation
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
+      addUiDebugMessage(`Storage event: key=${event.key}, newValue=${event.newValue?.substring(0,50)}, oldValue=${event.oldValue?.substring(0,50)}`);
       if (event.key === 'latestScannedDataTimestamp' || event.key === 'latestScannedDataItem') {
-        console.log("[generate page] localStorage change detected, revalidating loader data...");
-        // Check if the new value in localStorage is different from what we might already have
-        // to avoid unnecessary revalidations if the event is for the same data.
-        // This is a simple check; more robust would involve comparing actual data if needed.
-        if (event.storageArea?.getItem('latestScannedDataTimestamp') !== localStorage.getItem('lastRevalidatedTimestamp')) {
-            revalidator.revalidate();
-            localStorage.setItem('lastRevalidatedTimestamp', event.storageArea?.getItem('latestScannedDataTimestamp') || '');
+        const newTimestamp = event.storageArea?.getItem('latestScannedDataTimestamp');
+        const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
+        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
+
+        if (newTimestamp && newTimestamp !== lastRevalidated) {
+          addUiDebugMessage("Revalidating loader data due to new storage event...");
+          revalidator.revalidate();
+          localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
+        } else {
+          addUiDebugMessage("Storage event for same timestamp or no new timestamp, no revalidation.");
         }
       }
     };
 
     window.addEventListener('storage', handleStorageChange);
-    console.log("[generate page] Added storage event listener.");
+    addUiDebugMessage("Storage event listener added.");
 
-    // Initial revalidate if localStorage already has a newer item than loader (e.g. page was closed and reopened)
+    // Initial check on mount
     const latestStoredTimestamp = localStorage.getItem('latestScannedDataTimestamp');
-    if (latestStoredTimestamp && initialLoaderData.intent !== "loader-fetch-latest" && (!initialLoaderData.timestamp || parseInt(latestStoredTimestamp, 10) > initialLoaderData.timestamp)) {
-        console.log("[generate page] Found newer data in localStorage on initial load, revalidating.");
-        revalidator.revalidate();
-        localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
+    if (latestStoredTimestamp) {
+        addUiDebugMessage(`Initial mount check - localStorage latestScannedDataTimestamp: ${latestStoredTimestamp}, loaderData ts: ${initialLoaderData.timestamp}, intent: ${initialLoaderData.intent}`);
+        if (initialLoaderData.intent !== "loader-fetch-latest" || (initialLoaderData.timestamp && parseInt(latestStoredTimestamp, 10) > initialLoaderData.timestamp)) {
+            if (latestStoredTimestamp !== localStorage.getItem('lastRevalidatedTimestamp')) {
+                addUiDebugMessage("Found newer data in localStorage on initial mount, revalidating.");
+                revalidator.revalidate();
+                localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
+            } else {
+                addUiDebugMessage("Newer data in localStorage on mount, but already revalidated for this timestamp.");
+            }
+        }
     }
 
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
-      console.log("[generate page] Removed storage event listener.");
+      addUiDebugMessage("Storage event listener removed.");
     };
-  }, [revalidator, initialLoaderData.intent, initialLoaderData.timestamp]);
+  }, [revalidator, initialLoaderData.timestamp, initialLoaderData.intent, addUiDebugMessage]);
 
 
   const handleGenerateNewUuid = () => {
+    addUiDebugMessage("Button click: handleGenerateNewUuid");
     const formData = new FormData();
     formData.append("intent", "generate-uuid-via-action");
     formData.append("size", qrSize);
@@ -188,6 +213,16 @@ export default function GeneratePage() {
   return (
     <div className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 p-6 font-sans">
       <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-lg">
+        {/* UI Debug Log Display */}
+        {debugMessages.length > 0 && (
+            <div className="w-full p-2 mb-4 bg-slate-950 border border-slate-700 text-slate-400 text-xs rounded-md shadow-inner max-h-32 overflow-y-auto font-mono">
+            <p className="font-semibold text-slate-300 mb-1 border-b border-slate-700 pb-1">客戶端日誌 (Client Log):</p>
+            {debugMessages.map((msg, index) => (
+                <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">{msg.substring(msg.indexOf(']') + 2)}</div> // Remove [CLIENT HH:MM:SS.mmm] part for UI
+            ))}
+            </div>
+        )}
+
         <header className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500 mb-2">
             QR Code 產生器
