@@ -105,9 +105,23 @@ export default function QrScanner() {
     setScannedData(null);
     setError(null);
     setCameraPermissionError(false);
-    setDebugMessages(prev => ["日誌已清除..."]);
+    setDebugMessages([]);  // 完全清空日誌
     frameCounter.current = 0;
+    
+    // 確保停止之前的掃描
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (animationFrameId.current) {
+      cancelAnimationFrame(animationFrameId.current);
+      animationFrameId.current = null;
+    }
+    isLoopActiveRef.current = false;
+    
+    // 設置掃描狀態
     setIsScanning(true);
+    addDebugMessage("掃描狀態已設置為 true，準備初始化相機...");
   };
 
   const stopScan = useCallback((caller?: string) => {
@@ -136,89 +150,217 @@ export default function QrScanner() {
 
   useEffect(() => {
     let effectScopedStream: MediaStream | null = null;
+    
     if (isScanning) {
-      addDebugMessage("useEffect[isScanning=true]: 開始設定相機.");
-      isLoopActiveRef.current = false;
+      addDebugMessage("useEffect[isScanning=true]: 開始設定相機...");
+      
       const setupCameraAndStartLoop = async () => {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          addDebugMessage("useEffect: navigator.mediaDevices.getUserMedia 不支援.", true);
-          setError('您的瀏覽器不支援相機存取功能。');
-          setCameraPermissionError(true);
-          setIsScanning(false); return;
-        }
         try {
-          effectScopedStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          addDebugMessage("檢查瀏覽器相機支援...");
+          
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            addDebugMessage("navigator.mediaDevices.getUserMedia 不支援.", true);
+            setError('您的瀏覽器不支援相機存取功能。');
+            setCameraPermissionError(true);
+            setIsScanning(false);
+            return;
+          }
+
+          addDebugMessage("正在請求相機權限...");
+          
+          // 嘗試獲取相機權限
+          effectScopedStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+              facingMode: 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            } 
+          });
+          
           streamRef.current = effectScopedStream;
-          addDebugMessage("useEffect: 相機串流已獲取.");
-          if (videoRef.current) {
-            videoRef.current.srcObject = effectScopedStream;
-            const handlePlay = async () => {
-              if (!videoRef.current) return;
-              try {
-                await videoRef.current.play();
-                addDebugMessage("useEffect: 影片播放已開始.");
+          addDebugMessage("相機串流已獲取，設置影片元素...");
+          
+          if (!videoRef.current) {
+            addDebugMessage("videoRef.current is null!", true);
+            setError('影片元素未找到');
+            setIsScanning(false);
+            return;
+          }
+
+          const video = videoRef.current;
+          video.srcObject = effectScopedStream;
+          
+          const handleLoadedMetadata = () => {
+            addDebugMessage("影片元數據已載入，開始播放...");
+            video.play()
+              .then(() => {
+                addDebugMessage("影片播放成功，啟動掃描迴圈...");
                 frameCounter.current = 0;
                 isLoopActiveRef.current = true;
-                if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+                if (animationFrameId.current) {
+                  cancelAnimationFrame(animationFrameId.current);
+                }
                 animationFrameId.current = requestAnimationFrame(tick);
-              } catch (playError) {
-                addDebugMessage(`useEffect: 影片播放錯誤: ${playError instanceof Error ? playError.message : String(playError)}`, true);
-                stopScan("useEffect_play_error");
-              }
-            };
-            videoRef.current.onloadedmetadata = () => { addDebugMessage("useEffect: 影片元數據已載入."); if(videoRef.current) handlePlay(); };
-            videoRef.current.onerror = (e) => { addDebugMessage(`useEffect: 影片元素錯誤`, true); stopScan("useEffect_video_onerror"); };
-            if (videoRef.current.readyState >= HTMLMediaElement.HAVE_METADATA) { addDebugMessage("useEffect: 影片元數據已預先載入."); if(videoRef.current) handlePlay(); }
-          } else { addDebugMessage("useEffect: videoRef is null.", true); stopScan("useEffect_videoRef_null"); }
-        } catch (err) { addDebugMessage(`useEffect: 相機存取錯誤: ${err instanceof Error ? err.message : String(err)}`, true); setError('無法存取相機。'); setCameraPermissionError(true); setIsScanning(false); }
+              })
+              .catch((playError) => {
+                addDebugMessage(`影片播放錯誤: ${playError.message}`, true);
+                setError('無法播放相機畫面');
+                stopScan("play_error");
+              });
+          };
+
+          const handleVideoError = (event: string | Event) => {
+            const errorType = typeof event === 'string' ? event : event.type;
+            addDebugMessage(`影片元素錯誤: ${errorType}`, true);
+            setError('相機初始化失敗');
+            stopScan("video_error");
+          };
+
+          video.onloadedmetadata = handleLoadedMetadata;
+          video.onerror = handleVideoError;
+          
+          // 如果元數據已經載入，直接處理
+          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            addDebugMessage("影片元數據已預先載入，直接開始播放...");
+            handleLoadedMetadata();
+          }
+          
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          addDebugMessage(`相機存取錯誤: ${errorMessage}`, true);
+          
+          if (errorMessage.includes('Permission denied') || errorMessage.includes('NotAllowedError')) {
+            setError('相機權限被拒絕，請允許使用相機。');
+            setCameraPermissionError(true);
+          } else if (errorMessage.includes('NotFoundError')) {
+            setError('找不到相機設備。');
+            setCameraPermissionError(true);
+          } else {
+            setError('無法存取相機：' + errorMessage);
+            setCameraPermissionError(true);
+          }
+          
+          setIsScanning(false);
+        }
       };
+
       setupCameraAndStartLoop();
+
+      // Cleanup function
       return () => {
-        addDebugMessage("useEffect[isScanning=true] cleanup.");
+        addDebugMessage("useEffect[isScanning=true] cleanup - 清理相機資源...");
         isLoopActiveRef.current = false;
-        if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
-        if (effectScopedStream) effectScopedStream.getTracks().forEach(track => track.stop());
-        if (streamRef.current === effectScopedStream) streamRef.current = null;
-        if (videoRef.current) { videoRef.current.srcObject = null; videoRef.current.onloadedmetadata = null; videoRef.current.onerror = null; }
+        
+        if (animationFrameId.current) {
+          cancelAnimationFrame(animationFrameId.current);
+          animationFrameId.current = null;
+        }
+        
+        if (effectScopedStream) {
+          effectScopedStream.getTracks().forEach(track => {
+            addDebugMessage(`停止影片軌道: ${track.kind}`);
+            track.stop();
+          });
+        }
+        
+        if (streamRef.current === effectScopedStream) {
+          streamRef.current = null;
+        }
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.onloadedmetadata = null;
+          videoRef.current.onerror = null;
+        }
       };
     } else {
       addDebugMessage("useEffect[isScanning=false]: 確保停止.");
       isLoopActiveRef.current = false;
-      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
-      if (streamRef.current) { streamRef.current.getTracks().forEach(track => track.stop()); streamRef.current = null; }
-      if (videoRef.current) { videoRef.current.srcObject = null; if (videoRef.current.parentNode?.contains(videoRef.current)) { try { videoRef.current.load(); } catch (e) {} } }
+      
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+      
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        if (videoRef.current.parentNode?.contains(videoRef.current)) {
+          try { 
+            videoRef.current.load(); 
+          } catch (e) { 
+            // ignore load errors
+          }
+        }
+      }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isScanning]);
+  }, [isScanning, addDebugMessage, stopScan]);
 
   const tick = () => {
-    if (!isLoopActiveRef.current) { return; }
+    if (!isLoopActiveRef.current) { 
+      addDebugMessage(`Tick stopped: isLoopActiveRef=${isLoopActiveRef.current}`);
+      return; 
+    }
+    
     frameCounter.current++;
-    if (!videoRef.current || !canvasRef.current || !streamRef.current || videoRef.current.readyState < videoRef.current.HAVE_ENOUGH_DATA || videoRef.current.videoWidth === 0) {
+    
+    // 每 30 frames 輸出一次狀態訊息
+    if (frameCounter.current % 30 === 0) {
+      addDebugMessage(`Tick #${frameCounter.current}: 正在處理影像...`);
+    }
+    
+    if (!videoRef.current || !canvasRef.current || !streamRef.current) {
+      if (frameCounter.current % 30 === 0) {
+        addDebugMessage(`Tick #${frameCounter.current}: 等待元素準備 - video:${!!videoRef.current}, canvas:${!!canvasRef.current}, stream:${!!streamRef.current}`);
+      }
       if (isLoopActiveRef.current) animationFrameId.current = requestAnimationFrame(tick);
       return;
     }
+    
+    if (videoRef.current.readyState < videoRef.current.HAVE_ENOUGH_DATA || videoRef.current.videoWidth === 0) {
+      if (frameCounter.current % 30 === 0) {
+        addDebugMessage(`Tick #${frameCounter.current}: 等待影片資料 - readyState:${videoRef.current.readyState}, width:${videoRef.current.videoWidth}`);
+      }
+      if (isLoopActiveRef.current) animationFrameId.current = requestAnimationFrame(tick);
+      return;
+    }
+    
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
     if (ctx) {
       canvas.height = video.videoHeight;
       canvas.width = video.videoWidth;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
       try {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
         if (imageData.data.some(channel => channel !== 0)) {
-          const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+          const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, { 
+            inversionAttempts: 'dontInvert' 
+          });
+          
           if (code && code.data && code.data.trim() !== "") {
-            addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data.substring(0,30)}..."`);
+            addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到 QR Code! Data: "${code.data.substring(0,50)}..."`);
             setScannedData(code.data);
             stopScan("qr_code_found");
             return;
           }
         }
-      } catch (e) { addDebugMessage(`Tick #${frameCounter.current}: 影像處理/解碼錯誤: ${e instanceof Error ? e.message : String(e)}`, true); }
+      } catch (e) { 
+        addDebugMessage(`Tick #${frameCounter.current}: 影像處理/解碼錯誤: ${e instanceof Error ? e.message : String(e)}`, true); 
+      }
     }
-    if (isLoopActiveRef.current) animationFrameId.current = requestAnimationFrame(tick);
+    
+    if (isLoopActiveRef.current) {
+      animationFrameId.current = requestAnimationFrame(tick);
+    }
   };
 
   useEffect(() => {
