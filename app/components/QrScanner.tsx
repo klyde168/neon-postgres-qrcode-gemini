@@ -14,20 +14,20 @@ export default function QrScanner() {
   const fetcher = useFetcher<{success: boolean; message?: string; error?: string; id?: number}>();
   const [debugMessages, setDebugMessages] = useState<string[]>([]);
   const frameCounter = useRef(0); // To count frames processed by tick
+  const animationFrameId = useRef<number | null>(null); // To store requestAnimationFrame ID
 
   const addDebugMessage = useCallback((message: string, isError: boolean = false) => {
-    const fullMessage = `[${new Date().toLocaleTimeString()}] ${message}`;
+    const fullMessage = `[${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
     if (isError) {
       console.error(fullMessage);
     } else {
       console.log(fullMessage);
     }
-    setDebugMessages(prev => [...prev.slice(-15), fullMessage].sort((a,b) => { // Keep more logs, sort by time
-        const timeA = a.match(/\[(.*?)\]/)?.[1];
-        const timeB = b.match(/\[(.*?)\]/)?.[1];
-        if (timeA && timeB) return new Date(`1970/01/01 ${timeA}`).getTime() - new Date(`1970/01/01 ${timeB}`).getTime();
-        return 0;
-    }));
+    setDebugMessages(prev => {
+        const newMessages = [...prev, fullMessage];
+        // Keep last 20 messages
+        return newMessages.slice(Math.max(newMessages.length - 20, 0));
+    });
   }, []);
 
 
@@ -37,9 +37,9 @@ export default function QrScanner() {
     setError(null);
     setCameraPermissionError(false);
     fetcher.data = undefined;
-    setDebugMessages(["日誌已清除 (Logs cleared)..."]); // Clear and indicate
-    frameCounter.current = 0; // Reset frame counter
-    setIsScanning(true);
+    setDebugMessages(["日誌已清除 (Logs cleared)..."]);
+    frameCounter.current = 0;
+    setIsScanning(true); // Set this first so UI updates
 
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       try {
@@ -51,11 +51,41 @@ export default function QrScanner() {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           try {
-            await videoRef.current.play();
-            addDebugMessage("影片播放已開始 (Video playback started).");
-            requestAnimationFrame(tick);
-          } catch (playError) {
-            addDebugMessage(`影片播放錯誤: ${playError instanceof Error ? playError.message : String(playError)}`, true);
+            // Ensure video is ready to play
+            videoRef.current.onloadedmetadata = async () => {
+                addDebugMessage("影片元數據已載入 (Video metadata loaded).");
+                try {
+                    await videoRef.current!.play(); // Non-null assertion as we are in onloadedmetadata
+                    addDebugMessage("影片播放已開始 (Video playback started).");
+                    if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current); // Cancel previous if any
+                    animationFrameId.current = requestAnimationFrame(tick);
+                } catch (playError) {
+                    addDebugMessage(`影片播放錯誤 (onloadedmetadata): ${playError instanceof Error ? playError.message : String(playError)}`, true);
+                    setError('無法播放相機畫面。');
+                    setCameraPermissionError(true);
+                    setIsScanning(false); // Important to set before stopScan if play fails
+                    stopScan();
+                }
+            };
+            videoRef.current.onerror = (e) => {
+                addDebugMessage(`影片元素錯誤 (Video element error): ${JSON.stringify(e)}`, true);
+                setError('影片元素載入時發生錯誤。');
+                setCameraPermissionError(true);
+                setIsScanning(false);
+                stopScan();
+            };
+             // If metadata is already loaded (e.g., cached video stream)
+            if (videoRef.current.readyState >= videoRef.current.HAVE_METADATA) {
+                addDebugMessage("影片元數據已預先載入 (Video metadata already loaded).");
+                await videoRef.current.play();
+                addDebugMessage("影片播放已開始 (Video playback started - preloaded metadata).");
+                if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+                animationFrameId.current = requestAnimationFrame(tick);
+            }
+
+
+          } catch (playError) { // This catch might be redundant if using onloadedmetadata properly
+            addDebugMessage(`影片播放啟動錯誤: ${playError instanceof Error ? playError.message : String(playError)}`, true);
             setError('無法播放相機畫面。');
             setCameraPermissionError(true);
             setIsScanning(false);
@@ -63,12 +93,30 @@ export default function QrScanner() {
           }
         } else {
             addDebugMessage("Video ref is not available after obtaining stream.", true);
+            setIsScanning(false); // Stop scanning if video ref is not available
         }
       } catch (err) {
         let errorMessage = '無法存取相機。';
         const errorDetails = err instanceof Error ? `${err.name} - ${err.message}` : String(err);
         addDebugMessage(`相機存取錯誤: ${errorDetails}`, true);
-        if (err instanceof Error) { /* ... (error messages as before) ... */ }
+        // ... (detailed error messages as before)
+         if (err instanceof Error) {
+            if (err.name === 'NotAllowedError') {
+                errorMessage = '相機存取被拒絕。請檢查您的瀏覽器權限設定。';
+            } else if (err.name === 'NotFoundError') {
+                errorMessage = '找不到相機設備。';
+            } else if (err.name === 'NotReadableError') {
+                errorMessage = '相機目前無法使用，可能被其他應用程式佔用。';
+            } else if (err.name === 'AbortError') {
+                errorMessage = '相機請求被中止。';
+            } else if (err.name === 'OverconstrainedError') {
+                errorMessage = '找不到符合要求的相機設備。';
+            } else if (err.name === 'SecurityError') {
+                errorMessage = '相機存取因安全性問題被拒絕。';
+            } else {
+                errorMessage = `相機錯誤: ${err.message}`;
+            }
+        }
         setError(errorMessage);
         setCameraPermissionError(true);
         setIsScanning(false);
@@ -83,6 +131,11 @@ export default function QrScanner() {
 
   const stopScan = useCallback(() => {
     addDebugMessage("嘗試停止掃描 (Attempting to stop scan)...");
+    if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+        addDebugMessage("已取消動畫幀 (Cancelled animation frame).");
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -90,25 +143,43 @@ export default function QrScanner() {
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+      videoRef.current.onloadedmetadata = null; // Clean up event listener
+      videoRef.current.onerror = null; // Clean up event listener
     }
     setIsScanning(false);
   }, [addDebugMessage]);
 
 
   const tick = () => {
+    frameCounter.current++;
+    // Log entry and critical states immediately for the first few frames or periodically
+    if (frameCounter.current <= 5 || frameCounter.current % 15 === 0) {
+        addDebugMessage(
+        `Tick #${frameCounter.current}: isScanning=${isScanning}, stream=${!!streamRef.current}, videoEl=${!!videoRef.current}, canvasEl=${!!canvasRef.current}`
+        );
+    }
+
     if (!isScanning || !streamRef.current || !videoRef.current || !canvasRef.current) {
-      // If scanning was stopped, don't request another frame.
+      if (frameCounter.current <= 5 || frameCounter.current % 15 === 0) { // Log if exiting early
+        addDebugMessage(
+            `Tick #${frameCounter.current} Exit Early: Conditions not met. isScanning=${isScanning}, stream=${!!streamRef.current}, videoEl=${!!videoRef.current}, canvasEl=${!!canvasRef.current}`
+        );
+      }
+      // Ensure scanning is truly stopped if conditions are not met
+      if (isScanning) { // If isScanning is still true but other refs are missing, something is wrong
+        addDebugMessage(`Tick #${frameCounter.current}: Inconsistency - isScanning is true, but refs missing. Forcing stop.`, true);
+        stopScan();
+      }
       return;
     }
 
-    frameCounter.current++;
     const video = videoRef.current;
 
-    if (frameCounter.current % 30 === 0) { // Log video state every 30 frames
-        addDebugMessage(`Tick #${frameCounter.current}: Video State: readyState=${video.readyState}, width=${video.videoWidth}, height=${video.videoHeight}`);
+    if (frameCounter.current <= 5 || frameCounter.current % 15 === 0) { // Log video state more frequently initially
+        addDebugMessage(`Tick #${frameCounter.current}: Video State: readyState=${video.readyState}, width=${video.videoWidth}, height=${video.videoHeight}, paused=${video.paused}, ended=${video.ended}`);
     }
 
-    if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+    if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
@@ -120,7 +191,7 @@ export default function QrScanner() {
         try {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             if (imageData.data.some(channel => channel !== 0)) {
-                if (frameCounter.current % 5 === 0) { // Log jsQR attempt periodically
+                if (frameCounter.current % 3 === 0) { // Try decoding more frequently
                     addDebugMessage(`Tick #${frameCounter.current}: 嘗試 jsQR 解碼 (Attempting jsQR decode)...`);
                 }
                 const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, {
@@ -128,56 +199,65 @@ export default function QrScanner() {
                 });
 
                 if (code) {
-                  addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data}"`);
+                  addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data}" (length: ${code.data?.length})`);
                   if (code.data && code.data.trim() !== "") {
                     addDebugMessage(`Tick #${frameCounter.current}: 設定掃描資料: "${code.data}"`);
                     setScannedData(code.data);
-                    stopScan();
+                    stopScan(); // This will set isScanning to false and cancel next frame
                     return;
                   } else {
                     addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件但資料為空或空白。`);
                   }
                 } else {
-                  // Log less frequently if no code is found to avoid flooding
-                  if (frameCounter.current % 60 === 0) {
+                  if (frameCounter.current % 30 === 0) { // Log less frequently if no code is found
                      addDebugMessage(`Tick #${frameCounter.current}: 此幀未找到 QR code (No QR code in this frame).`);
                   }
                 }
             } else {
-                 if (frameCounter.current % 60 === 0) { // Log if image is all black
+                 if (frameCounter.current % 30 === 0) {
                     addDebugMessage(`Tick #${frameCounter.current}: 影像資料全黑 (Image data is all black).`);
                  }
             }
         } catch (e) {
             addDebugMessage(`Tick #${frameCounter.current}: 影像處理/解碼錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
         }
+      } else {
+         if (frameCounter.current % 15 === 0) addDebugMessage(`Tick #${frameCounter.current}: Canvas context is null.`, true);
       }
     } else {
-        if (frameCounter.current % 30 === 0) {
+        if (frameCounter.current % 15 === 0) {
             addDebugMessage(`Tick #${frameCounter.current}: Video not ready or dimensions invalid (readyState: ${video.readyState}, width: ${video.videoWidth}, height: ${video.videoHeight}).`);
         }
     }
 
-    if (isScanning && streamRef.current) { // Check streamRef.current again before scheduling next frame
-        requestAnimationFrame(tick);
+    // Schedule next frame only if still scanning
+    if (isScanning && streamRef.current) {
+        animationFrameId.current = requestAnimationFrame(tick);
     } else {
-        addDebugMessage("Tick: Scanning stopped or stream lost, not scheduling next frame.");
+        if (animationFrameId.current) { // If there was an animation frame scheduled, but we are no longer scanning
+            cancelAnimationFrame(animationFrameId.current);
+            animationFrameId.current = null;
+        }
+        addDebugMessage(`Tick #${frameCounter.current}: 掃描已停止或串流遺失，不安排下一幀 (Scanning stopped or stream lost, not scheduling next frame).`);
     }
   };
 
    useEffect(() => {
+    // Cleanup when component unmounts
     return () => {
       addDebugMessage("元件卸載，執行 stopScan (Component unmounting, executing stopScan).");
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+      }
       stopScan();
     };
-  }, [stopScan, addDebugMessage]); // addDebugMessage added to dependencies of useEffect
+  }, [stopScan, addDebugMessage]);
 
 
   return (
-    <div className="flex flex-col items-center space-y-2 w-full"> {/* Reduced space-y */}
-      {/* Debug Messages Area */}
+    <div className="flex flex-col items-center space-y-2 w-full">
       {debugMessages.length > 0 && (
-        <div className="w-full max-w-sm p-2 mb-2 bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-md shadow max-h-48 overflow-y-auto font-mono">
+        <div className="w-full max-w-sm p-2 mb-2 bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-md shadow max-h-60 overflow-y-auto font-mono">
           <p className="font-semibold mb-1 border-b border-slate-600 pb-1 text-slate-100">除錯日誌 (Debug Log):</p>
           {debugMessages.map((msg, index) => (
             <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-800 px-1">{msg}</div>
@@ -185,7 +265,6 @@ export default function QrScanner() {
         </div>
       )}
 
-      {/* Video and Canvas Container */}
       <div className="w-full max-w-sm aspect-[4/3] bg-slate-700 rounded-lg overflow-hidden shadow-lg relative border-2 border-slate-600">
         <video
           ref={videoRef}
@@ -220,7 +299,6 @@ export default function QrScanner() {
         <canvas ref={canvasRef} className="hidden" />
       </div>
 
-      {/* Control Buttons */}
       {!isScanning && !scannedData ? (
         <button
           onClick={startScan}
