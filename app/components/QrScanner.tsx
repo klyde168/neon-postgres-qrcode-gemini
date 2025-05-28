@@ -397,7 +397,21 @@ export default function QrScanner() {
         )}
         {isScanning && !scannedData && (
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-3/4 h-3/4 border-4 border-dashed border-purple-500 opacity-75 rounded-lg animate-pulse"></div>
+                {/* 大型掃描框 - 佔據 90% 的空間 */}
+                <div className="w-[90%] h-[90%] border-4 border-dashed border-purple-500 opacity-80 rounded-xl animate-pulse relative">
+                  {/* 四個角落的掃描指示器 */}
+                  <div className="absolute top-0 left-0 w-8 h-8 border-l-4 border-t-4 border-purple-400"></div>
+                  <div className="absolute top-0 right-0 w-8 h-8 border-r-4 border-t-4 border-purple-400"></div>
+                  <div className="absolute bottom-0 left-0 w-8 h-8 border-l-4 border-b-4 border-purple-400"></div>
+                  <div className="absolute bottom-0 right-0 w-8 h-8 border-r-4 border-b-4 border-purple-400"></div>
+                  
+                  {/* 中央提示文字 */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="bg-black bg-opacity-50 text-white px-3 py-1 rounded-md text-sm">
+                      將 QR Code 對準此區域
+                    </div>
+                  </div>
+                </div>
             </div>
         )}
         <canvas ref={canvasRef} className="hidden" />

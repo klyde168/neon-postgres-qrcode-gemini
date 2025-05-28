@@ -333,27 +333,66 @@ export default function GeneratePage() {
 
     addUiDebugMessage(`輪詢檢查更新 - lastKnownId: ${lastKnownScannedId}`);
 
-    // 使用 submit 而不是 fetch，確保路由正確
-    const formData = new FormData();
-    formData.append("intent", "check-for-updates");
-    formData.append("lastKnownId", lastKnownScannedId?.toString() || "0");
+    // 創建一個隱藏的表單來提交請求，確保正確路由
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = window.location.pathname;
+    form.style.display = 'none';
     
-    // 使用 submit 但不更新 UI，只獲取結果
+    // 添加 intent 字段
+    const intentInput = document.createElement('input');
+    intentInput.type = 'hidden';
+    intentInput.name = 'intent';
+    intentInput.value = 'check-for-updates';
+    form.appendChild(intentInput);
+    
+    // 添加 lastKnownId 字段
+    const idInput = document.createElement('input');
+    idInput.type = 'hidden';
+    idInput.name = 'lastKnownId';
+    idInput.value = lastKnownScannedId?.toString() || '0';
+    form.appendChild(idInput);
+    
+    // 添加標記字段表示這是 AJAX 請求
+    const ajaxInput = document.createElement('input');
+    ajaxInput.type = 'hidden';
+    ajaxInput.name = '_ajax';
+    ajaxInput.value = 'true';
+    form.appendChild(ajaxInput);
+    
+    document.body.appendChild(form);
+    
+    // 使用 FormData 發送請求
+    const formData = new FormData(form);
+    
+    addUiDebugMessage(`輪詢請求 URL: ${window.location.pathname}`);
+    addUiDebugMessage(`輪詢表單數據: intent=${formData.get('intent')}, lastKnownId=${formData.get('lastKnownId')}`);
+    
     fetch(window.location.pathname, {
       method: 'POST',
-      body: formData
+      body: formData,
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest', // 標記為 AJAX 請求
+      }
     })
     .then(response => {
       addUiDebugMessage(`輪詢響應狀態: ${response.status}`);
       addUiDebugMessage(`輪詢響應 Content-Type: ${response.headers.get('content-type')}`);
       
+      // 清理表單
+      document.body.removeChild(form);
+      
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
-        throw new Error(`Expected JSON, got ${contentType}`);
+        // 如果不是 JSON，嘗試讀取為文本看看內容
+        return response.text().then(text => {
+          addUiDebugMessage(`輪詢響應非 JSON 內容: ${text.substring(0, 200)}...`, true);
+          throw new Error(`Expected JSON, got ${contentType}. Content: ${text.substring(0, 100)}`);
+        });
       }
       
       return response.json();
@@ -379,11 +418,16 @@ export default function GeneratePage() {
       }
     })
     .catch(err => {
+      // 確保表單被清理
+      if (form.parentNode) {
+        document.body.removeChild(form);
+      }
+      
       addUiDebugMessage(`輪詢檢查錯誤: ${err.message}`, true);
       
       // 如果是 JSON 解析錯誤，可能是服務器返回 HTML
       if (err.message.includes('Unexpected token')) {
-        addUiDebugMessage("服務器返回 HTML 而非 JSON，可能是路由問題", true);
+        addUiDebugMessage("服務器返回 HTML 而非 JSON，這可能是路由問題。檢查服務器控制台是否有錯誤。", true);
       }
     });
   }, [autoReloadEnabled, forceUuidMode, lastKnownScannedId, autoRefreshFromLatestScan, addUiDebugMessage]);
