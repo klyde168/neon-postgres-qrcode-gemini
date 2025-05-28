@@ -1,51 +1,77 @@
 // app/routes/generate.tsx
-import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
-import { Form, Link, useActionData, json, useSubmit } from "@remix-run/react";
+import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
+import { Form, Link, useActionData, json, useSubmit, useLoaderData } from "@remix-run/react";
 import { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
-import { randomUUID } from "node:crypto"; // Correctly import randomUUID
+import { randomUUID } from "node:crypto";
 
 export const meta: MetaFunction = () => {
   return [
-    { title: "產生 QR Code" }, // Changed title to be more general
-    { name: "description", content: "快速產生一個 QR Code" },
+    { title: "產生 QR Code" },
+    { name: "description", content: "快速產生一個 QR Code，初始為 UUID" },
   ];
 };
 
-// Define a type for the action data for better type safety on the client
-type ActionResponse = {
+// Define a type for the data returned by loader and action
+type QrCodeResponse = {
   qrCodeDataUrl?: string | null;
   error?: string | null;
-  sourceText?: string | null; // Text that was attempted to be encoded
-  intent?: string | null;
+  sourceText?: string | null; // Text that was encoded
+  intent?: string | null; // To differentiate loader from action, or specific actions
 };
 
+// Loader function: Executes on initial page load on the server
+export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
+  const url = new URL(request.url);
+  // Allow overriding default size/EC via query params for loader if needed in future
+  // For now, using defaults for initial UUID
+  const initialSize = url.searchParams.get("size") || "256";
+  const initialEcLevel = (url.searchParams.get("ecLevel") as QRCode.QRCodeErrorCorrectionLevel) || "H";
+
+  const initialUuid = randomUUID();
+  try {
+    const qrCodeDataUrl = await QRCode.toDataURL(initialUuid, {
+      errorCorrectionLevel: initialEcLevel,
+      width: parseInt(initialSize, 10),
+      margin: 2,
+      color: {
+        dark: "#0F172A",
+        light: "#FFFFFF"
+      }
+    });
+    return json({ qrCodeDataUrl, error: null, sourceText: initialUuid, intent: "loader-initial-uuid" } as QrCodeResponse);
+  } catch (err) {
+    console.error("Initial QR Code generation error (loader):", err);
+    return json({ error: "初始 QR Code 產生失敗。", qrCodeDataUrl: null, sourceText: initialUuid, intent: "loader-initial-uuid" } as QrCodeResponse, { status: 500 });
+  }
+}
+
+// Action function: Executes on form submission (e.g., button click) on the server
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
   let textToEncode: string | null = null;
   let sourceTextForResponse: string | null = null;
 
-
   if (intent === "generate-uuid") {
     textToEncode = randomUUID();
     sourceTextForResponse = textToEncode;
   } else {
-    const textValue = formData.get("text");
+    const textValue = formData.get("text"); // For potential future manual text input
     if (typeof textValue === 'string' && textValue.trim() !== "") {
       textToEncode = textValue;
       sourceTextForResponse = textToEncode;
     } else if (intent !== "generate-uuid") {
-        return json({ error: "請輸入有效的文字或點擊產生 UUID。", qrCodeDataUrl: null, sourceText: typeof textValue === 'string' ? textValue : "" } as ActionResponse, { status: 400 });
+        return json({ error: "請輸入有效的文字或點擊產生 UUID。", qrCodeDataUrl: null, sourceText: typeof textValue === 'string' ? textValue : "", intent } as QrCodeResponse, { status: 400 });
     }
   }
 
   if (!textToEncode) {
-    return json({ error: "無法確定要編碼的內容。", qrCodeDataUrl: null, sourceText: null } as ActionResponse, { status: 400 });
+    return json({ error: "無法確定要編碼的內容。", qrCodeDataUrl: null, sourceText: null, intent } as QrCodeResponse, { status: 400 });
   }
 
   if (textToEncode.length > 1000) {
-    return json({ error: "內容過長，請縮短後再試。", qrCodeDataUrl: null, sourceText: textToEncode } as ActionResponse, { status: 400 });
+    return json({ error: "內容過長，請縮短後再試。", qrCodeDataUrl: null, sourceText: textToEncode, intent } as QrCodeResponse, { status: 400 });
   }
 
   const sizeValue = formData.get("size") || "256";
@@ -61,33 +87,41 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         light: "#FFFFFF"
       }
     });
-    return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent } as ActionResponse);
+    return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent } as QrCodeResponse);
   } catch (err) {
-    console.error("QR Code generation error:", err);
-    return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent } as ActionResponse, { status: 500 });
+    console.error("QR Code generation error (action):", err);
+    return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent } as QrCodeResponse, { status: 500 });
   }
 }
 
 export default function GeneratePage() {
-  // Use the defined ActionResponse type for useActionData
-  const actionData = useActionData<ActionResponse>();
+  const loaderData = useLoaderData<QrCodeResponse>();
+  const actionData = useActionData<QrCodeResponse>();
+
+  // Determine which data to use: actionData takes precedence if available
+  const currentQrData = actionData || loaderData;
+
   const [qrSize, setQrSize] = useState("256");
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
-  // State to display the text that was encoded for the QR code
-  const [encodedText, setEncodedText] = useState<string | null>(null);
+  const [displayedQrUrl, setDisplayedQrUrl] = useState<string | null>(null);
+  const [displayedSourceText, setDisplayedSourceText] = useState<string | null>(null);
 
   useEffect(() => {
-    if (actionData?.sourceText) {
-      setEncodedText(actionData.sourceText);
-    } else if (actionData && actionData.error) {
-      // If there's an error, we might not have sourceText, or it might be irrelevant
-      // Depending on desired behavior, you could clear encodedText or leave it
-      setEncodedText(actionData.sourceText || null); // Show sourceText if available even with error
+    if (currentQrData?.qrCodeDataUrl) {
+      setDisplayedQrUrl(currentQrData.qrCodeDataUrl);
+    } else if (currentQrData?.error) {
+      setDisplayedQrUrl(null); // Clear QR on error
     }
-  }, [actionData]);
+    if (currentQrData?.sourceText) {
+      setDisplayedSourceText(currentQrData.sourceText);
+    } else if (currentQrData?.error) {
+      setDisplayedSourceText(currentQrData.sourceText || null); // Show attempted text on error if available
+    }
+  }, [currentQrData]);
+
 
   const handleGenerateUuid = () => {
     const formData = new FormData();
@@ -105,7 +139,7 @@ export default function GeneratePage() {
             QR Code 產生器
           </h1>
           <p className="text-slate-400">
-            點擊按鈕以產生一個基於 UUID 的 QR Code。
+            初始載入時會自動產生一個 UUID QR Code。點擊按鈕可產生新的。
           </p>
         </header>
 
@@ -152,36 +186,36 @@ export default function GeneratePage() {
                 onClick={handleGenerateUuid}
                 className="w-full bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-cyan-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
             >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-shield-ellipsis inline-block mr-2 align-middle"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="M8 11h.01"/><path d="M12 11h.01"/><path d="M16 11h.01"/></svg>
-                產生 UUID QR Code
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw inline-block mr-2 align-middle"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M3 21a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 16"/><path d="M21 11v5h-5"/></svg>
+                產生新的 UUID QR Code
             </button>
         </div>
 
 
-        {actionData?.error && (
+        {currentQrData?.error && (
           <div id="text-input-error" className="mt-6 p-3 bg-red-800 bg-opacity-70 border border-red-600 text-red-200 rounded-lg text-center" role="alert">
             <p className="font-medium">錯誤：</p>
-            <p>{actionData.error}</p>
+            <p>{currentQrData.error}</p>
           </div>
         )}
 
-        {actionData?.qrCodeDataUrl && (
+        {displayedQrUrl && (
           <div className="mt-8 text-center p-6 bg-slate-700 rounded-lg shadow-inner">
-            <h3 className="text-xl font-semibold text-slate-100 mb-2">產生的 QR Code：</h3>
-            {encodedText && ( // Display the source text used for the QR code
-                <p className="text-xs text-slate-400 mb-3 break-all">內容: {encodedText}</p>
+            <h3 className="text-xl font-semibold text-slate-100 mb-2">目前 QR Code：</h3>
+            {displayedSourceText && (
+                <p className="text-xs text-slate-400 mb-3 break-all">內容: {displayedSourceText}</p>
             )}
             <div className="flex justify-center items-center bg-white p-2 rounded-md inline-block shadow-lg">
                 <img
                 ref={imgRef}
-                src={actionData.qrCodeDataUrl}
-                alt="產生的 QR Code" // Changed alt text
+                src={displayedQrUrl}
+                alt="產生的 QR Code"
                 className="mx-auto"
                 />
             </div>
             <a
-              href={actionData.qrCodeDataUrl}
-              download={`qrcode_${(encodedText?.substring(0,15).replace(/[^a-zA-Z0-9]/g, '_')) || 'generated'}.png`}
+              href={displayedQrUrl}
+              download={`qrcode_${(displayedSourceText?.substring(0,15).replace(/[^a-zA-Z0-9]/g, '_')) || 'generated'}.png`}
               className="mt-6 inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-700 transition-colors"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download mr-2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
