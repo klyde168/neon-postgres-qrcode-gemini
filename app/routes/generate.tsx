@@ -54,22 +54,22 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
     intent = "loader-force-uuid";
     console.log(`[LOADER ${loaderExecutionId}] Force UUID generation (forceUuid=${forceUuid}, skipDb=${skipDb}): "${textToEncode}"`);
   } else {
+    // 預設行為：產生新的 UUID 而不是顯示舊的掃描資料
+    // 這樣每次進入頁面都會看到新的 UUID，而不是舊的掃描資料
+    textToEncode = randomUUID();
+    intent = "loader-initial-uuid";
+    console.log(`[LOADER ${loaderExecutionId}] Generated new initial UUID: "${textToEncode}"`);
+    
+    // 但仍然要檢查是否有最新的掃描資料，以便後續使用
     try {
       const client = await pool.connect();
-      console.log(`[LOADER ${loaderExecutionId}] Database client connected.`);
+      console.log(`[LOADER ${loaderExecutionId}] Database client connected for ID check.`);
       try {
-        const latestScanQuery = 'SELECT data, scanned_at, id FROM scanned_data ORDER BY id DESC LIMIT 1';
+        const latestScanQuery = 'SELECT id FROM scanned_data ORDER BY id DESC LIMIT 1';
         const res = await client.query(latestScanQuery);
-        if (res.rows.length > 0 && res.rows[0].data) {
-          textToEncode = res.rows[0].data;
-          isLatestScan = true;
+        if (res.rows.length > 0) {
           lastScannedId = res.rows[0].id;
-          console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data (ID: ${res.rows[0].id}): "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
-        } else {
-          // 沒有掃描資料時，產生新的 UUID
-          textToEncode = randomUUID();
-          intent = "loader-initial-uuid";
-          console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated NEW UUID: "${textToEncode}"`);
+          console.log(`[LOADER ${loaderExecutionId}] Found latest scan ID: ${lastScannedId}`);
         }
       } finally {
         client.release();
@@ -77,11 +77,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       }
     } catch (dbError: any) {
       console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
-      errorMsg = "讀取最新掃描資料時發生錯誤。";
-      // 資料庫錯誤時，產生新的 UUID
-      textToEncode = randomUUID();
-      intent = "loader-db-error-fallback-uuid";
-      console.log(`[LOADER ${loaderExecutionId}] DB error, generated NEW fallback UUID: "${textToEncode}"`);
+      errorMsg = "檢查掃描資料時發生錯誤。";
     }
   }
 
@@ -291,16 +287,51 @@ export default function GeneratePage() {
       
       if (event.key === 'latestScannedDataTimestamp' || event.key === 'latestScannedDataItem') {
         const newTimestamp = event.storageArea?.getItem('latestScannedDataTimestamp');
+        const newData = event.storageArea?.getItem('latestScannedDataItem');
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
-        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
+        
+        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}, NewData: ${newData?.substring(0,30)}...`);
 
-        if (newTimestamp && newTimestamp !== lastRevalidated) {
-          addUiDebugMessage("New scan detected! Revalidating to show latest scanned QR code...");
-          setForceUuidMode(false); // 關閉強制 UUID 模式，允許顯示新掃描的內容
-          revalidator.revalidate();
-          localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
+        if (newTimestamp && newTimestamp !== lastRevalidated && newData) {
+          addUiDebugMessage("New scan detected! Updating display directly...");
+          
+          // 直接更新顯示，不需要重新驗證
+          const newDisplayData: QrCodeResponse = {
+            qrCodeDataUrl: null,
+            error: null,
+            sourceText: newData,
+            intent: "storage-updated-scan",
+            timestamp: parseInt(newTimestamp, 10),
+            isLatestScan: true,
+            lastScannedId: null
+          };
+          
+          // 生成新的 QR Code
+          if (typeof window !== 'undefined') {
+            import('qrcode').then((QRCodeModule) => {
+              const QRCode = QRCodeModule.default || QRCodeModule;
+              QRCode.toDataURL(newData, {
+                errorCorrectionLevel: errorCorrection,
+                width: parseInt(qrSize, 10),
+                margin: 2,
+                color: { dark: "#0F172A", light: "#FFFFFF" }
+              }).then((qrCodeDataUrl: string) => {
+                newDisplayData.qrCodeDataUrl = qrCodeDataUrl;
+                setCurrentDisplayData(newDisplayData);
+                setForceUuidMode(false); // 關閉強制 UUID 模式
+                localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
+                addUiDebugMessage(`Display updated with new scan data: ${newData.substring(0,30)}...`);
+              }).catch((err: any) => {
+                addUiDebugMessage(`QR Code generation failed: ${err.message}`, true);
+                // 如果 QR 生成失敗，退回到重新驗證
+                setForceUuidMode(false);
+                revalidator.revalidate();
+                localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
+              });
+            });
+          }
         } else {
-          addUiDebugMessage("Storage event for same timestamp or no new timestamp, no revalidation.");
+          addUiDebugMessage("Storage event for same timestamp or no new data, no update.");
         }
       }
     };
@@ -408,22 +439,46 @@ export default function GeneratePage() {
     // 關閉強制 UUID 模式，允許顯示最新掃描資料
     setForceUuidMode(false);
     
-    const formData = new FormData();
-    formData.append("intent", "generate-from-latest-scan");
-    formData.append("size", qrSize);
-    formData.append("errorCorrectionLevel", errorCorrection);
-    
-    addUiDebugMessage(`Submitting latest scan refresh action...`);
-    submit(formData, { method: "post" });
+    // 直接在客戶端獲取並顯示最新掃描資料
+    fetch('/scan', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      }
+    }).then(response => {
+      if (response.ok) {
+        // 如果成功，重新載入頁面數據
+        revalidator.revalidate();
+        addUiDebugMessage("Successfully triggered revalidation for latest scan");
+      } else {
+        addUiDebugMessage("Failed to check for latest scan data", true);
+        // 退回到 action 方式
+        const formData = new FormData();
+        formData.append("intent", "generate-from-latest-scan");
+        formData.append("size", qrSize);
+        formData.append("errorCorrectionLevel", errorCorrection);
+        submit(formData, { method: "post" });
+      }
+    }).catch(err => {
+      addUiDebugMessage(`Error fetching latest scan: ${err.message}`, true);
+      // 退回到 action 方式
+      const formData = new FormData();
+      formData.append("intent", "generate-from-latest-scan");
+      formData.append("size", qrSize);
+      formData.append("errorCorrectionLevel", errorCorrection);
+      submit(formData, { method: "post" });
+    });
   };
 
   const getStatusMessage = () => {
     if (currentDisplayData?.intent === "client-generated-uuid") {
       return "🆕 顯示客戶端生成的新 UUID QR Code。";
+    } else if (currentDisplayData?.intent === "storage-updated-scan") {
+      return "✅ 自動更新：顯示最新掃描的 QR Code。";
     } else if (currentDisplayData?.intent === "loader-force-uuid") {
       return "🆕 顯示強制產生的新 UUID QR Code。";
     } else if (currentDisplayData?.intent === "loader-initial-uuid" || currentDisplayData?.intent?.includes("fallback-uuid")) {
-      return "初始顯示 UUID QR Code。掃描新 QR Code 後將自動更新於此。";
+      return "🆕 預設顯示新 UUID QR Code。掃描新 QR Code 後將自動更新於此。";
     } else if (currentDisplayData?.intent === "loader-fetch-latest" && currentDisplayData?.isLatestScan) {
       return "✅ 顯示最新掃描的 QR Code。";
     } else if (currentDisplayData?.intent === "generate-uuid-via-action") {
@@ -545,7 +600,7 @@ export default function GeneratePage() {
           <div className="mt-8 text-center p-6 bg-slate-700 rounded-lg shadow-inner">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xl font-semibold text-slate-100">目前 QR Code：</h3>
-              {currentDisplayData?.isLatestScan && (
+              {(currentDisplayData?.isLatestScan || currentDisplayData?.intent === "storage-updated-scan") && (
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                   <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 8 8">
                     <circle cx="4" cy="4" r="3"/>
@@ -555,7 +610,8 @@ export default function GeneratePage() {
               )}
               {(currentDisplayData?.intent === "generate-uuid-via-action" || 
                 currentDisplayData?.intent === "loader-force-uuid" ||
-                currentDisplayData?.intent === "client-generated-uuid") && (
+                currentDisplayData?.intent === "client-generated-uuid" ||
+                currentDisplayData?.intent === "loader-initial-uuid") && (
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
                   <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 8 8">
                     <circle cx="4" cy="4" r="3"/>
