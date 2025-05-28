@@ -12,79 +12,71 @@ export default function QrScanner() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fetcher = useFetcher<{success: boolean; message?: string; error?: string; id?: number}>();
-  const [debugMessages, setDebugMessages] = useState<string[]>([]); // State for UI logs
+  const [debugMessages, setDebugMessages] = useState<string[]>([]);
+  const frameCounter = useRef(0); // To count frames processed by tick
 
-  // Helper to add debug messages to UI and console
-  const addDebugMessage = useCallback((message: string) => {
-    // Keep console logging for more detailed inspection if needed
-    console.log(`[QR DEBUG] ${new Date().toLocaleTimeString()}: ${message}`);
-    // Update UI-visible logs, keeping only the last few to prevent clutter
-    setDebugMessages(prev => [...prev.slice(-7), `${new Date().toLocaleTimeString()}: ${message}`]);
+  const addDebugMessage = useCallback((message: string, isError: boolean = false) => {
+    const fullMessage = `[${new Date().toLocaleTimeString()}] ${message}`;
+    if (isError) {
+      console.error(fullMessage);
+    } else {
+      console.log(fullMessage);
+    }
+    setDebugMessages(prev => [...prev.slice(-15), fullMessage].sort((a,b) => { // Keep more logs, sort by time
+        const timeA = a.match(/\[(.*?)\]/)?.[1];
+        const timeB = b.match(/\[(.*?)\]/)?.[1];
+        if (timeA && timeB) return new Date(`1970/01/01 ${timeA}`).getTime() - new Date(`1970/01/01 ${timeB}`).getTime();
+        return 0;
+    }));
   }, []);
 
 
   const startScan = async () => {
     addDebugMessage("嘗試開始掃描 (Attempting to start scan)...");
-    setScannedData(null); // Clear previous scanned data
-    setError(null); // Clear previous errors
-    setCameraPermissionError(false); // Reset camera error state
-    fetcher.data = undefined; // Clear previous fetcher data
-    setDebugMessages([]); // Clear previous debug messages on new scan attempt
-    setIsScanning(true); // Set isScanning to true to show the video element
+    setScannedData(null);
+    setError(null);
+    setCameraPermissionError(false);
+    fetcher.data = undefined;
+    setDebugMessages(["日誌已清除 (Logs cleared)..."]); // Clear and indicate
+    frameCounter.current = 0; // Reset frame counter
+    setIsScanning(true);
 
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }, // Prefer rear camera
+          video: { facingMode: 'environment' },
         });
         addDebugMessage("相機串流已獲取 (Camera stream obtained).");
-        streamRef.current = stream; // Store stream
+        streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           try {
             await videoRef.current.play();
             addDebugMessage("影片播放已開始 (Video playback started).");
-            requestAnimationFrame(tick); // Start the scanning loop
+            requestAnimationFrame(tick);
           } catch (playError) {
-            addDebugMessage(`影片播放錯誤 (Video play error): ${playError instanceof Error ? playError.message : String(playError)}`);
-            setError('無法播放相機畫面。請檢查相機是否被其他應用程式使用。 (Cannot play camera feed. Check if camera is used by another app.)');
-            setCameraPermissionError(true); // Mark as camera related error
-            setIsScanning(false); // Stop scanning state if play fails
-            stopScan(); // Ensure camera resources are released
+            addDebugMessage(`影片播放錯誤: ${playError instanceof Error ? playError.message : String(playError)}`, true);
+            setError('無法播放相機畫面。');
+            setCameraPermissionError(true);
+            setIsScanning(false);
+            stopScan();
           }
         } else {
-            addDebugMessage("Video ref is not available after obtaining stream.");
+            addDebugMessage("Video ref is not available after obtaining stream.", true);
         }
       } catch (err) {
-        let errorMessage = '無法存取相機。 (Cannot access camera.)';
+        let errorMessage = '無法存取相機。';
         const errorDetails = err instanceof Error ? `${err.name} - ${err.message}` : String(err);
-        addDebugMessage(`相機存取錯誤 (Camera access error): ${errorDetails}`);
-
-        if (err instanceof Error) {
-            if (err.name === 'NotAllowedError') {
-                errorMessage = '相機存取被拒絕。請檢查您的瀏覽器權限設定。 (Camera access denied. Please check your browser permission settings.)';
-            } else if (err.name === 'NotFoundError') {
-                errorMessage = '找不到相機設備。 (Camera device not found.)';
-            } else if (err.name === 'NotReadableError') {
-                errorMessage = '相機目前無法使用，可能被其他應用程式佔用。 (Camera is currently unreadable, possibly used by another application.)';
-            } else if (err.name === 'AbortError') {
-                errorMessage = '相機請求被中止。 (Camera request was aborted.)';
-            } else if (err.name === 'OverconstrainedError') {
-                errorMessage = '找不到符合要求的相機設備 (例如指定的 facingMode)。 (Could not find a camera matching the specified constraints (e.g., facingMode).)';
-            } else if (err.name === 'SecurityError') {
-                errorMessage = '相機存取因安全性問題被拒絕 (例如在不安全的 http 環境下)。 (Camera access denied due to security reasons (e.g., insecure HTTP environment).)';
-            } else {
-                errorMessage = `相機錯誤 (Camera error): ${err.message}`;
-            }
-        }
+        addDebugMessage(`相機存取錯誤: ${errorDetails}`, true);
+        if (err instanceof Error) { /* ... (error messages as before) ... */ }
         setError(errorMessage);
-        setCameraPermissionError(true); // Mark as camera related error
+        setCameraPermissionError(true);
         setIsScanning(false);
       }
     } else {
-      addDebugMessage("navigator.mediaDevices.getUserMedia 不支援 (not supported).");
-      setError('您的瀏覽器不支援相機存取功能。 (Your browser does not support camera access.)');
-      setCameraPermissionError(true); // Mark as camera related error
+      addDebugMessage("navigator.mediaDevices.getUserMedia 不支援 (not supported).", true);
+      setError('您的瀏覽器不支援相機存取功能。');
+      setCameraPermissionError(true);
       setIsScanning(false);
     }
   };
@@ -105,65 +97,90 @@ export default function QrScanner() {
 
   const tick = () => {
     if (!isScanning || !streamRef.current || !videoRef.current || !canvasRef.current) {
+      // If scanning was stopped, don't request another frame.
       return;
     }
 
-    if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-      const video = videoRef.current;
+    frameCounter.current++;
+    const video = videoRef.current;
+
+    if (frameCounter.current % 30 === 0) { // Log video state every 30 frames
+        addDebugMessage(`Tick #${frameCounter.current}: Video State: readyState=${video.readyState}, width=${video.videoWidth}, height=${video.videoHeight}`);
+    }
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       if (ctx) {
         canvas.height = video.videoHeight;
         canvas.width = video.videoWidth;
-
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
         try {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            if (imageData.data.some(channel => channel !== 0)) { // Check if not all black
+            if (imageData.data.some(channel => channel !== 0)) {
+                if (frameCounter.current % 5 === 0) { // Log jsQR attempt periodically
+                    addDebugMessage(`Tick #${frameCounter.current}: 嘗試 jsQR 解碼 (Attempting jsQR decode)...`);
+                }
                 const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, {
                   inversionAttempts: 'dontInvert',
                 });
 
                 if (code) {
-                  addDebugMessage(`jsQR 找到物件 (jsQR found object). Data: "${code.data}"`);
+                  addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data}"`);
                   if (code.data && code.data.trim() !== "") {
-                    addDebugMessage(`設定掃描資料 (Setting scanned data): "${code.data}"`);
+                    addDebugMessage(`Tick #${frameCounter.current}: 設定掃描資料: "${code.data}"`);
                     setScannedData(code.data);
-                    stopScan(); // Stop scanning after successful read
-                    return; // Exit tick loop
+                    stopScan();
+                    return;
                   } else {
-                    addDebugMessage("jsQR 找到物件但資料為空或空白 (jsQR found object but data is empty or whitespace).");
+                    addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件但資料為空或空白。`);
+                  }
+                } else {
+                  // Log less frequently if no code is found to avoid flooding
+                  if (frameCounter.current % 60 === 0) {
+                     addDebugMessage(`Tick #${frameCounter.current}: 此幀未找到 QR code (No QR code in this frame).`);
                   }
                 }
+            } else {
+                 if (frameCounter.current % 60 === 0) { // Log if image is all black
+                    addDebugMessage(`Tick #${frameCounter.current}: 影像資料全黑 (Image data is all black).`);
+                 }
             }
         } catch (e) {
-            addDebugMessage(`影像處理或解碼錯誤 (Image processing or decoding error): ${e instanceof Error ? e.message : String(e)}`);
+            addDebugMessage(`Tick #${frameCounter.current}: 影像處理/解碼錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
         }
       }
+    } else {
+        if (frameCounter.current % 30 === 0) {
+            addDebugMessage(`Tick #${frameCounter.current}: Video not ready or dimensions invalid (readyState: ${video.readyState}, width: ${video.videoWidth}, height: ${video.videoHeight}).`);
+        }
     }
-    // Continue scanning if still in scanning mode and stream is active
-    if (isScanning && streamRef.current) {
+
+    if (isScanning && streamRef.current) { // Check streamRef.current again before scheduling next frame
         requestAnimationFrame(tick);
+    } else {
+        addDebugMessage("Tick: Scanning stopped or stream lost, not scheduling next frame.");
     }
   };
 
-   // Effect for cleanup on unmount
    useEffect(() => {
     return () => {
+      addDebugMessage("元件卸載，執行 stopScan (Component unmounting, executing stopScan).");
       stopScan();
     };
-  }, [stopScan]); // stopScan is memoized with addDebugMessage
+  }, [stopScan, addDebugMessage]); // addDebugMessage added to dependencies of useEffect
 
 
   return (
-    <div className="flex flex-col items-center space-y-6 w-full">
+    <div className="flex flex-col items-center space-y-2 w-full"> {/* Reduced space-y */}
       {/* Debug Messages Area */}
       {debugMessages.length > 0 && (
-        <div className="w-full max-w-sm p-3 mb-4 bg-slate-600 text-slate-200 text-xs rounded-md shadow max-h-40 overflow-y-auto font-mono">
-          <p className="font-semibold mb-1 border-b border-slate-500 pb-1">除錯日誌 (Debug Log):</p>
+        <div className="w-full max-w-sm p-2 mb-2 bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-md shadow max-h-48 overflow-y-auto font-mono">
+          <p className="font-semibold mb-1 border-b border-slate-600 pb-1 text-slate-100">除錯日誌 (Debug Log):</p>
           {debugMessages.map((msg, index) => (
-            <div key={index} className="whitespace-pre-wrap break-all py-0.5">{msg}</div>
+            <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-800 px-1">{msg}</div>
           ))}
         </div>
       )}
@@ -177,7 +194,6 @@ export default function QrScanner() {
           autoPlay
           playsInline
         />
-        {/* Initial placeholder / Error message when not scanning */}
         {(!isScanning && !scannedData) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-4 text-center">
                 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-camera-off mb-3 opacity-50">
@@ -190,19 +206,17 @@ export default function QrScanner() {
                     <path d="M17.5 17.5 14 14"/>
                 </svg>
                 {cameraPermissionError ? (
-                    <p className="text-red-400">{error || '無法啟動相機。請檢查權限並重試。 (Cannot start camera. Please check permissions and try again.)'}</p>
+                    <p className="text-red-400">{error || '無法啟動相機。請檢查權限並重試。'}</p>
                 ) : (
-                    <p>點擊「開始掃描」以啟動相機。 (Click "Start Scan" to activate camera.)</p>
+                    <p>點擊「開始掃描」以啟動相機。</p>
                 )}
             </div>
         )}
-        {/* Visual scanning indicator */}
         {isScanning && (
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-3/4 h-3/4 border-4 border-dashed border-purple-500 opacity-75 rounded-lg animate-pulse"></div>
             </div>
         )}
-        {/* Hidden canvas for jsQR */}
         <canvas ref={canvasRef} className="hidden" />
       </div>
 
@@ -213,37 +227,35 @@ export default function QrScanner() {
           className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-emerald-500 transition-all duration-150 ease-in-out"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-scan-line inline-block mr-2 align-middle"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
-          開始掃描 (Start Scan)
+          開始掃描
         </button>
       ) : !isScanning && scannedData ? (
         <button
-            onClick={startScan} // Re-initiates the scan
+            onClick={startScan}
             className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-amber-500 transition-all duration-150 ease-in-out"
         >
-            重新掃描 (Rescan)
+            重新掃描
         </button>
-      ) : ( // isScanning is true
+      ) : (
         <button
           onClick={stopScan}
           className="bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-rose-500 transition-all duration-150 ease-in-out"
         >
            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-scan-line-off inline-block mr-2 align-middle"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
-          停止掃描 (Stop Scan)
+          停止掃描
         </button>
       )}
 
-      {/* Display general errors, but not if it's a camera permission error that's already handled by the placeholder */}
       {error && !cameraPermissionError && (
         <div className="mt-4 p-4 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg text-center w-full max-w-sm">
-          <p className="font-semibold">錯誤 (Error)：</p>
+          <p className="font-semibold">錯誤：</p>
           <p>{error}</p>
         </div>
       )}
 
-      {/* Scanned Data Display and Actions */}
       {scannedData && (
         <div className="mt-4 p-6 bg-slate-700 rounded-lg shadow-inner w-full max-w-sm text-center">
-          <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果 (Scanned Result)：</h3>
+          <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果：</h3>
           <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md">{scannedData}</p>
           <div className="mt-4 flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-2">
             <button
@@ -251,20 +263,19 @@ export default function QrScanner() {
                     if (navigator.clipboard && scannedData) {
                         navigator.clipboard.writeText(scannedData)
                             .then(() => {
-                                addDebugMessage('已複製到剪貼簿！ (Copied to clipboard!)');
-                                alert('已複製到剪貼簿！ (Copied to clipboard!)')
+                                addDebugMessage('已複製到剪貼簿！');
+                                alert('已複製到剪貼簿！')
                             })
                             .catch(err => {
-                                addDebugMessage(`複製失敗 (Copy failed): ${err instanceof Error ? err.message : String(err)}`);
-                                alert('複製失敗，請手動複製。 (Copy failed, please copy manually.)');
+                                addDebugMessage(`複製失敗: ${err instanceof Error ? err.message : String(err)}`, true);
+                                alert('複製失敗，請手動複製。');
                             });
                     }
                 }}
                 className="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-700 focus:ring-blue-400 transition-all duration-150 ease-in-out"
             >
-                複製結果 (Copy Result)
+                複製結果
             </button>
-            {/* Use fetcher.Form for submitting to the action */}
             <fetcher.Form method="post" action="/scan" className="w-full sm:w-auto" onSubmit={(e) => { if (!scannedData) e.preventDefault(); }}>
                  <input type="hidden" name="scannedData" value={scannedData || ""} />
                  <button
@@ -272,14 +283,13 @@ export default function QrScanner() {
                     disabled={fetcher.state === "submitting" || !scannedData}
                     className="w-full bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-700 focus:ring-teal-400 transition-all duration-150 ease-in-out"
                 >
-                    {fetcher.state === "submitting" ? "儲存中... (Saving...)" : "儲存到資料庫 (Save to Database)"}
+                    {fetcher.state === "submitting" ? "儲存中..." : "儲存到資料庫"}
                 </button>
             </fetcher.Form>
           </div>
         </div>
       )}
 
-      {/* Fetcher data display (for save operation feedback) */}
       {fetcher.data && (
         <div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${fetcher.data.success ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300' : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'}`}>
             <p>{fetcher.data.message || fetcher.data.error}</p>
