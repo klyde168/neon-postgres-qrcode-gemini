@@ -238,6 +238,22 @@ export default function GeneratePage() {
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
+  // 新增：自動獲取最新掃描資料的函數 - 移到前面定義
+  const autoRefreshFromLatestScan = useCallback(() => {
+    addUiDebugMessage("Auto-refresh: Getting latest scan data...");
+    
+    // 關閉強制 UUID 模式
+    setForceUuidMode(false);
+    
+    // 使用 action 來獲取最新掃描資料
+    const formData = new FormData();
+    formData.append("intent", "generate-from-latest-scan");
+    formData.append("size", qrSize);
+    formData.append("errorCorrectionLevel", errorCorrection);
+    
+    submit(formData, { method: "post" });
+  }, [qrSize, errorCorrection, submit, addUiDebugMessage]);
+
   useEffect(() => {
     addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}...", isLatestScan=${initialLoaderData.isLatestScan}, lastScannedId=${initialLoaderData.lastScannedId}`);
     
@@ -287,51 +303,20 @@ export default function GeneratePage() {
       
       if (event.key === 'latestScannedDataTimestamp' || event.key === 'latestScannedDataItem') {
         const newTimestamp = event.storageArea?.getItem('latestScannedDataTimestamp');
-        const newData = event.storageArea?.getItem('latestScannedDataItem');
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
         
-        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}, NewData: ${newData?.substring(0,30)}...`);
+        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
 
-        if (newTimestamp && newTimestamp !== lastRevalidated && newData) {
-          addUiDebugMessage("New scan detected! Updating display directly...");
+        if (newTimestamp && newTimestamp !== lastRevalidated) {
+          addUiDebugMessage("New scan detected! Auto-triggering latest scan update...");
           
-          // 直接更新顯示，不需要重新驗證
-          const newDisplayData: QrCodeResponse = {
-            qrCodeDataUrl: null,
-            error: null,
-            sourceText: newData,
-            intent: "storage-updated-scan",
-            timestamp: parseInt(newTimestamp, 10),
-            isLatestScan: true,
-            lastScannedId: null
-          };
+          // 自動觸發「更新最新掃描」功能
+          autoRefreshFromLatestScan();
           
-          // 生成新的 QR Code
-          if (typeof window !== 'undefined') {
-            import('qrcode').then((QRCodeModule) => {
-              const QRCode = QRCodeModule.default || QRCodeModule;
-              QRCode.toDataURL(newData, {
-                errorCorrectionLevel: errorCorrection,
-                width: parseInt(qrSize, 10),
-                margin: 2,
-                color: { dark: "#0F172A", light: "#FFFFFF" }
-              }).then((qrCodeDataUrl: string) => {
-                newDisplayData.qrCodeDataUrl = qrCodeDataUrl;
-                setCurrentDisplayData(newDisplayData);
-                setForceUuidMode(false); // 關閉強制 UUID 模式
-                localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
-                addUiDebugMessage(`Display updated with new scan data: ${newData.substring(0,30)}...`);
-              }).catch((err: any) => {
-                addUiDebugMessage(`QR Code generation failed: ${err.message}`, true);
-                // 如果 QR 生成失敗，退回到重新驗證
-                setForceUuidMode(false);
-                revalidator.revalidate();
-                localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
-              });
-            });
-          }
+          // 標記已處理此次更新
+          localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
         } else {
-          addUiDebugMessage("Storage event for same timestamp or no new data, no update.");
+          addUiDebugMessage("Storage event for same timestamp, no update needed.");
         }
       }
     };
@@ -347,9 +332,12 @@ export default function GeneratePage() {
       
       const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
       if (event.detail?.timestamp && event.detail.timestamp !== lastRevalidated) {
-        addUiDebugMessage("Custom event triggered revalidation...");
-        setForceUuidMode(false); // 關閉強制 UUID 模式
-        revalidator.revalidate();
+        addUiDebugMessage("Custom event triggered auto-refresh from latest scan...");
+        
+        // 自動觸發「更新最新掃描」功能
+        autoRefreshFromLatestScan();
+        
+        // 標記已處理此次更新
         localStorage.setItem('lastRevalidatedTimestamp', event.detail.timestamp);
       }
     };
@@ -364,9 +352,9 @@ export default function GeneratePage() {
         addUiDebugMessage(`Initial mount check - localStorage latestScannedDataTimestamp: ${latestStoredTimestamp}, loaderData ts: ${initialLoaderData.timestamp}, intent: ${initialLoaderData.intent}`);
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
         if (latestStoredTimestamp !== lastRevalidated) {
-            addUiDebugMessage("Found newer scan data in localStorage on initial mount, revalidating.");
-            setForceUuidMode(false); // 關閉強制 UUID 模式
-            revalidator.revalidate();
+            addUiDebugMessage("Found newer scan data in localStorage on initial mount, auto-triggering latest scan update.");
+            // 自動觸發「更新最新掃描」功能
+            autoRefreshFromLatestScan();
             localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
         }
     }
@@ -376,7 +364,7 @@ export default function GeneratePage() {
       window.removeEventListener('newScanComplete', handleNewScanComplete as EventListener);
       addUiDebugMessage("Event listeners removed.");
     };
-  }, [revalidator, initialLoaderData.timestamp, initialLoaderData.intent, addUiDebugMessage, autoReloadEnabled]);
+  }, [revalidator, initialLoaderData.timestamp, initialLoaderData.intent, addUiDebugMessage, autoReloadEnabled, autoRefreshFromLatestScan]);
 
   const handleGenerateNewUuid = () => {
     addUiDebugMessage("Button click: handleGenerateNewUuid - 強制產生新 UUID");
@@ -439,35 +427,15 @@ export default function GeneratePage() {
     // 關閉強制 UUID 模式，允許顯示最新掃描資料
     setForceUuidMode(false);
     
-    // 直接在客戶端獲取並顯示最新掃描資料
-    fetch('/scan', {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-      }
-    }).then(response => {
-      if (response.ok) {
-        // 如果成功，重新載入頁面數據
-        revalidator.revalidate();
-        addUiDebugMessage("Successfully triggered revalidation for latest scan");
-      } else {
-        addUiDebugMessage("Failed to check for latest scan data", true);
-        // 退回到 action 方式
-        const formData = new FormData();
-        formData.append("intent", "generate-from-latest-scan");
-        formData.append("size", qrSize);
-        formData.append("errorCorrectionLevel", errorCorrection);
-        submit(formData, { method: "post" });
-      }
-    }).catch(err => {
-      addUiDebugMessage(`Error fetching latest scan: ${err.message}`, true);
-      // 退回到 action 方式
-      const formData = new FormData();
-      formData.append("intent", "generate-from-latest-scan");
-      formData.append("size", qrSize);
-      formData.append("errorCorrectionLevel", errorCorrection);
-      submit(formData, { method: "post" });
-    });
+    // 直接獲取最新掃描資料並更新顯示
+    // 使用 action 來獲取最新掃描資料
+    const formData = new FormData();
+    formData.append("intent", "generate-from-latest-scan");
+    formData.append("size", qrSize);
+    formData.append("errorCorrectionLevel", errorCorrection);
+    
+    addUiDebugMessage("Submitting request to get latest scan data...");
+    submit(formData, { method: "post" });
   };
 
   const getStatusMessage = () => {
