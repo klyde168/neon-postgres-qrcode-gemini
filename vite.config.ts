@@ -21,4 +21,8 @@ export default defineConfig({
     }),
     tsconfigPaths(),
   ],
+  server: {
+    port: 80, // 將開發伺服器的埠號設定為 80
+    host: true, // 允許外部訪問
+  },
 });
