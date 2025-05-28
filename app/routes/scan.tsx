@@ -1,6 +1,8 @@
-import type { MetaFunction } from "@remix-run/node";
-import { Link } from "@remix-run/react";
-import QrScanner from "~/components/QrScanner"; // 假設 QrScanner 元件的路徑
+// app/routes/scan.tsx
+import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
+import { Link, json } from "@remix-run/react";
+import QrScanner from "~/components/QrScanner";
+import { pool } from "~/utils/db.server"; // Import the pool
 
 export const meta: MetaFunction = () => {
   return [
@@ -8,6 +10,29 @@ export const meta: MetaFunction = () => {
     { name: "description", content: "使用相機掃描 QR Code" },
   ];
 };
+
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  const scannedData = formData.get("scannedData");
+
+  if (typeof scannedData !== "string" || scannedData.trim() === "") {
+    return json({ success: false, error: "Scanned data is empty or invalid." }, { status: 400 });
+  }
+
+  try {
+    const client = await pool.connect();
+    try {
+      const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id';
+      const res = await client.query(queryText, [scannedData]);
+      return json({ success: true, id: res.rows[0].id, message: "Data saved successfully!" });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("Database error:", error);
+    return json({ success: false, error: "Failed to save data to database." }, { status: 500 });
+  }
+}
 
 export default function ScanPage() {
   return (
@@ -22,14 +47,14 @@ export default function ScanPage() {
           </p>
         </header>
 
-        <QrScanner />
+        <QrScanner /> {/* QrScanner component will handle the submission */}
 
         <div className="mt-8 text-center">
           <Link
             to="/"
             className="inline-block text-purple-400 hover:text-purple-300 hover:underline transition-colors"
           >
-            &larr; 返回 QR Code 產生器
+            &larr; 返回主頁
           </Link>
         </div>
       </div>
