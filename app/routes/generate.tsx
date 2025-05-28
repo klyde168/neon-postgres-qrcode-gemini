@@ -127,7 +127,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
   const actionExecutionId = randomUUID().substring(0,8);
-  console.log(`[ACTION ${actionExecutionId}] Initiated.`);
+  console.log(`[ACTION ${actionExecutionId}] Initiated. URL: ${request.url}, Method: ${request.method}`);
   
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
@@ -135,7 +135,8 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   let lastScannedId: number | null = null;
   const currentTimestamp = Date.now();
 
-  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
+  console.log(`[ACTION ${actionExecutionId}] Intent: "${intent}"`);
+  console.log(`[ACTION ${actionExecutionId}] FormData keys:`, Array.from(formData.keys()));
 
   if (intent === "generate-uuid-via-action") {
     // 每次都產生全新的 UUID，不檢查資料庫，確保唯一性
@@ -145,7 +146,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     console.log(`[ACTION ${actionExecutionId}] UUID verification - Length: ${textToEncode.length}, Format check: ${/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(textToEncode)}`);
   } else if (intent === "check-for-updates") {
     // 檢查是否有新的掃描資料
-    console.log(`[ACTION ${actionExecutionId}] Processing check-for-updates`);
+    console.log(`[ACTION ${actionExecutionId}] Processing check-for-updates request`);
     
     const lastKnownIdStr = formData.get("lastKnownId") as string;
     const lastKnownId = parseInt(lastKnownIdStr, 10) || 0;
@@ -154,14 +155,18 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     
     try {
       const client = await pool.connect();
+      console.log(`[ACTION ${actionExecutionId}] Database connected for update check`);
+      
       try {
         const checkQuery = 'SELECT id, data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
         const res = await client.query(checkQuery);
         
-        console.log(`[ACTION ${actionExecutionId}] Query result: ${res.rows.length} rows`);
+        console.log(`[ACTION ${actionExecutionId}] Query executed - rows: ${res.rows.length}`);
         
         if (res.rows.length > 0) {
-          console.log(`[ACTION ${actionExecutionId}] Latest scan: ID=${res.rows[0].id}, data="${res.rows[0].data?.substring(0,30)}..."`);
+          console.log(`[ACTION ${actionExecutionId}] Latest scan found: ID=${res.rows[0].id}, data="${res.rows[0].data?.substring(0,30)}..."`);
+        } else {
+          console.log(`[ACTION ${actionExecutionId}] No scan data found in database`);
         }
         
         const hasUpdate = res.rows.length > 0 && res.rows[0].id > lastKnownId;
@@ -175,21 +180,36 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
           lastKnownId,
           debug: {
             queryRows: res.rows.length,
-            latestData: res.rows.length > 0 ? res.rows[0].data?.substring(0,50) : null
+            latestData: res.rows.length > 0 ? res.rows[0].data?.substring(0,50) : null,
+            timestamp: currentTimestamp
           }
         };
         
-        return json(result);
+        console.log(`[ACTION ${actionExecutionId}] Returning JSON result:`, result);
+        
+        return new Response(JSON.stringify(result), {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
       } finally {
         client.release();
+        console.log(`[ACTION ${actionExecutionId}] Database connection released`);
       }
     } catch (dbError: any) {
       console.error(`[ACTION ${actionExecutionId}] Database error during update check:`, dbError.message);
-      return json({ 
+      const errorResult = { 
         hasUpdate: false, 
         latestScanId: 0, 
         lastKnownId,
         error: dbError.message 
+      };
+      
+      return new Response(JSON.stringify(errorResult), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        status: 500,
       });
     }
   } else if (intent === "generate-from-latest-scan") {
@@ -313,22 +333,29 @@ export default function GeneratePage() {
 
     addUiDebugMessage(`輪詢檢查更新 - lastKnownId: ${lastKnownScannedId}`);
 
-    // 檢查資料庫中是否有比當前更新的掃描資料
-    fetch('/generate', {
+    // 使用 submit 而不是 fetch，確保路由正確
+    const formData = new FormData();
+    formData.append("intent", "check-for-updates");
+    formData.append("lastKnownId", lastKnownScannedId?.toString() || "0");
+    
+    // 使用 submit 但不更新 UI，只獲取結果
+    fetch(window.location.pathname, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        intent: 'check-for-updates',
-        lastKnownId: lastKnownScannedId?.toString() || '0'
-      })
+      body: formData
     })
     .then(response => {
       addUiDebugMessage(`輪詢響應狀態: ${response.status}`);
+      addUiDebugMessage(`輪詢響應 Content-Type: ${response.headers.get('content-type')}`);
+      
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error(`Expected JSON, got ${contentType}`);
+      }
+      
       return response.json();
     })
     .then(data => {
@@ -353,6 +380,11 @@ export default function GeneratePage() {
     })
     .catch(err => {
       addUiDebugMessage(`輪詢檢查錯誤: ${err.message}`, true);
+      
+      // 如果是 JSON 解析錯誤，可能是服務器返回 HTML
+      if (err.message.includes('Unexpected token')) {
+        addUiDebugMessage("服務器返回 HTML 而非 JSON，可能是路由問題", true);
+      }
     });
   }, [autoReloadEnabled, forceUuidMode, lastKnownScannedId, autoRefreshFromLatestScan, addUiDebugMessage]);
 
