@@ -7,10 +7,11 @@ export default function QrScanner() {
   const [scannedData, setScannedData] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
+  const isLoopActiveRef = useRef<boolean>(false);
   const [cameraPermissionError, setCameraPermissionError] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const streamRef = useRef<MediaStream | null>(null); // Stores the active MediaStream
   const fetcher = useFetcher<{success: boolean; message?: string; error?: string; id?: number}>();
   const [debugMessages, setDebugMessages] = useState<string[]>([]);
   const frameCounter = useRef(0);
@@ -20,33 +21,36 @@ export default function QrScanner() {
     const fullMessage = `[${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
     if (isError) console.error(fullMessage);
     else console.log(fullMessage);
-    setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 19)), fullMessage]);
+    setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
   }, []);
 
-  const startScan = async () => {
-    addDebugMessage("嘗試開始掃描 (Attempting to start scan)...");
+  const startScan = () => { // Removed async as useEffect handles async setup
+    addDebugMessage("startScan: 嘗試開始掃描 (User clicked Start Scan)...");
     setScannedData(null);
     setError(null);
     setCameraPermissionError(false);
     fetcher.data = undefined;
-    setDebugMessages(prev => ["日誌已清除 (Logs cleared)..."]);
+    setDebugMessages(prev => ["日誌已清除 (Logs cleared)..."]); // Start with a clean slate
     frameCounter.current = 0;
-
-    setIsScanning(true);
+    setIsScanning(true); // This will trigger the useEffect
   };
 
   const stopScan = useCallback((caller?: string) => {
-    addDebugMessage(`嘗試停止掃描 (Attempting to stop scan) from: ${caller || 'unknown'}`);
+    addDebugMessage(`stopScan from ${caller || 'unknown'}: 嘗試停止掃描...`);
+    isLoopActiveRef.current = false; // Signal the loop to stop *immediately*
+
     if (animationFrameId.current) {
       cancelAnimationFrame(animationFrameId.current);
       animationFrameId.current = null;
-      addDebugMessage("已取消動畫幀 (Cancelled animation frame).");
+      addDebugMessage("stopScan: 已取消動畫幀.");
     }
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      addDebugMessage("相機串流已停止 (Camera stream stopped).");
+      streamRef.current = null; // Clear the ref
+      addDebugMessage("stopScan: 相機串流已停止.");
     }
+
     if (videoRef.current) {
       videoRef.current.srcObject = null;
       videoRef.current.onloadedmetadata = null;
@@ -55,146 +59,153 @@ export default function QrScanner() {
         try { videoRef.current.load(); } catch (e) { /* ignore */ }
       }
     }
-    setIsScanning(false);
-  }, [addDebugMessage]);
+    // This should be the last step to ensure cleanup based on isLoopActiveRef happens first
+    if(isScanning){ // Only update state if it needs changing
+        setIsScanning(false);
+    }
+  }, [addDebugMessage, isScanning]);
 
 
   useEffect(() => {
+    // This effect manages the camera and scan loop based on `isScanning`
     if (isScanning) {
-      addDebugMessage("useEffect: isScanning is true. 嘗試啟動相機 (Attempting to start camera).");
-      let localStream: MediaStream | null = null;
+      addDebugMessage("useEffect[isScanning=true]: 開始設定相機及掃描迴圈.");
+      isLoopActiveRef.current = false; // Ensure loop is not active until explicitly started
 
-      const setupCameraAndStartTick = async () => {
+      const setupCameraAndStartLoop = async () => {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          addDebugMessage("navigator.mediaDevices.getUserMedia 不支援.", true);
+          addDebugMessage("useEffect: navigator.mediaDevices.getUserMedia 不支援.", true);
           setError('您的瀏覽器不支援相機存取功能。');
           setCameraPermissionError(true);
-          setIsScanning(false);
+          setIsScanning(false); // Trigger cleanup and state change
           return;
         }
 
         try {
-          localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-          streamRef.current = localStream;
-          addDebugMessage("相機串流已獲取 (Camera stream obtained).");
+          const currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          streamRef.current = currentStream; // Store the stream in the ref
+          addDebugMessage("useEffect: 相機串流已獲取.");
 
           if (videoRef.current) {
-            videoRef.current.srcObject = localStream;
+            videoRef.current.srcObject = currentStream;
 
-            videoRef.current.onloadedmetadata = async () => {
-              addDebugMessage("影片元數據已載入 (Video metadata loaded).");
+            const handlePlay = async () => {
               try {
                 await videoRef.current!.play();
-                addDebugMessage("影片播放已開始 (Video playback started).");
+                addDebugMessage("useEffect: 影片播放已開始.");
                 frameCounter.current = 0;
-                if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+                isLoopActiveRef.current = true; // <<<< CRITICAL: Enable loop *just before* starting
+                if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current); // Clear any old ones
                 animationFrameId.current = requestAnimationFrame(tick);
+                addDebugMessage(`useEffect: requestAnimationFrame(tick) 已調用. ID: ${animationFrameId.current}`);
               } catch (playError) {
-                addDebugMessage(`影片播放錯誤 (onloadedmetadata): ${playError instanceof Error ? playError.message : String(playError)}`, true);
+                addDebugMessage(`useEffect: 影片播放錯誤: ${playError instanceof Error ? playError.message : String(playError)}`, true);
                 setError('無法播放相機畫面。');
                 setCameraPermissionError(true);
-                stopScan("video_play_error_onloadedmetadata_useeffect");
+                stopScan("useEffect_play_error");
               }
-            };
-            videoRef.current.onerror = (eventOrMessage) => { // Modified this line
-              let errorMessageDetail = 'unknown video element error';
-              if (typeof eventOrMessage === 'string') {
-                errorMessageDetail = eventOrMessage;
-              } else if (eventOrMessage && typeof eventOrMessage === 'object' && 'type' in eventOrMessage) {
-                // Check if it's an Event-like object with a type property
-                errorMessageDetail = (eventOrMessage as Event).type;
-              }
-              addDebugMessage(`影片元素錯誤: ${errorMessageDetail}`, true);
-              setError('影片元素載入時發生錯誤。');
-              setCameraPermissionError(true);
-              stopScan("video_element_error_useeffect");
             };
 
+            videoRef.current.onloadedmetadata = () => {
+              addDebugMessage("useEffect: 影片元數據已載入.");
+              handlePlay();
+            };
+            videoRef.current.onerror = (e) => {
+              let errorDetail = 'unknown video error';
+              if (typeof e === 'string') errorDetail = e;
+              else if (e && (e as Event).type) errorDetail = (e as Event).type;
+              addDebugMessage(`useEffect: 影片元素錯誤: ${errorDetail}`, true);
+              setError('影片元素載入時發生錯誤。');
+              setCameraPermissionError(true);
+              stopScan("useEffect_video_onerror");
+            };
+
+            // If metadata is already loaded
             if (videoRef.current.readyState >= HTMLMediaElement.HAVE_METADATA) {
-                 addDebugMessage("影片元數據已預先載入 (Video metadata already loaded in useEffect).");
-                 try {
-                    await videoRef.current.play();
-                    addDebugMessage("影片播放已開始 (Video playback started - preloaded metadata in useEffect).");
-                    frameCounter.current = 0;
-                    if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
-                    animationFrameId.current = requestAnimationFrame(tick);
-                 } catch(playError) {
-                    addDebugMessage(`影片播放錯誤 (preloaded metadata in useEffect): ${playError instanceof Error ? playError.message : String(playError)}`, true);
-                    setError('無法播放相機畫面(預載入)。');
-                    setCameraPermissionError(true);
-                    stopScan("video_play_error_preloaded_useeffect");
-                 }
+              addDebugMessage("useEffect: 影片元數據已預先載入.");
+              handlePlay();
             }
           } else {
-            addDebugMessage("useEffect: Video ref is not available after obtaining stream.", true);
-            stopScan("video_ref_null_useeffect");
+            addDebugMessage("useEffect: videoRef is null after stream obtained.", true);
+            stopScan("useEffect_videoRef_null");
           }
         } catch (err) {
-          let errorMessage = '無法存取相機。';
-          const errorDetails = err instanceof Error ? `${err.name} - ${err.message}` : String(err);
-          addDebugMessage(`useEffect: 相機存取錯誤: ${errorDetails}`, true);
-           if (err instanceof Error) {
-            if (err.name === 'NotAllowedError') {
-                errorMessage = '相機存取被拒絕。請檢查您的瀏覽器權限設定。';
-            } else if (err.name === 'NotFoundError') {
-                errorMessage = '找不到相機設備。';
-            } else if (err.name === 'NotReadableError') {
-                errorMessage = '相機目前無法使用，可能被其他應用程式佔用。';
-            } else if (err.name === 'AbortError') {
-                errorMessage = '相機請求被中止。';
-            } else if (err.name === 'OverconstrainedError') {
-                errorMessage = '找不到符合要求的相機設備。';
-            } else if (err.name === 'SecurityError') {
-                errorMessage = '相機存取因安全性問題被拒絕。';
-            } else {
-                errorMessage = `相機錯誤: ${err.message}`;
-            }
-        }
-          setError(errorMessage);
+          addDebugMessage(`useEffect: 相機存取錯誤: ${err instanceof Error ? `${err.name} - ${err.message}` : String(err)}`, true);
+          setError('無法存取相機。'); // Generic message, specific ones logged
           setCameraPermissionError(true);
-          setIsScanning(false);
+          setIsScanning(false); // Trigger cleanup
         }
       };
 
-      setupCameraAndStartTick();
+      setupCameraAndStartLoop();
 
       return () => {
-        addDebugMessage("useEffect cleanup for isScanning=true: 停止掃描 (Stopping scan).");
-        if (localStream) {
-            localStream.getTracks().forEach(track => track.stop());
-            addDebugMessage("useEffect cleanup: Local camera stream stopped.");
-        }
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(track => track.stop());
-            streamRef.current = null;
-             addDebugMessage("useEffect cleanup: Ref camera stream stopped.");
-        }
+        // Cleanup function for this effect instance
+        addDebugMessage("useEffect[isScanning=true] cleanup: 執行中...");
+        isLoopActiveRef.current = false; // Signal any running tick to stop
+
         if (animationFrameId.current) {
           cancelAnimationFrame(animationFrameId.current);
           animationFrameId.current = null;
+          addDebugMessage("useEffect cleanup: 已取消動畫幀.");
         }
+
+        // Important: Use the stream from streamRef.current for cleanup,
+        // as `localStream` in setupCameraAndStartLoop is out of scope here.
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(track => track.stop());
+          streamRef.current = null; // Clear the ref
+          addDebugMessage("useEffect cleanup: 相機串流已停止 (from streamRef).");
+        }
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.onloadedmetadata = null;
+          videoRef.current.onerror = null;
+        }
+        addDebugMessage("useEffect[isScanning=true] cleanup: 完成.");
       };
     } else {
-      addDebugMessage("useEffect: isScanning is false. 執行停止掃描邏輯 (Executing stop scan logic).");
-      stopScan("useEffect_isScanning_false");
+      // This block runs when isScanning becomes false (e.g., after stopScan or successful scan)
+      addDebugMessage("useEffect[isScanning=false]: 確保所有資源已釋放.");
+      isLoopActiveRef.current = false; // Ensure loop is stopped
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+      if (streamRef.current) { // If a stream was active, stop it
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+        addDebugMessage("useEffect[isScanning=false]: 相機串流已停止 (from streamRef).");
+      }
+       if (videoRef.current) { // Reset video element
+          videoRef.current.srcObject = null;
+          if (videoRef.current.parentNode?.contains(videoRef.current)) {
+             try { videoRef.current.load(); } catch (e) { /* ignore */ }
+          }
+        }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isScanning]); // addDebugMessage removed as it's stable due to useCallback with empty deps
+  }, [isScanning]); // addDebugMessage removed, it's stable
 
   const tick = () => {
+    if (!isLoopActiveRef.current) {
+      addDebugMessage(`Tick #${frameCounter.current + 1}: isLoopActiveRef is false. Loop terminating.`);
+      animationFrameId.current = null; // Ensure no dangling ID
+      return;
+    }
+
     frameCounter.current++;
-    if (frameCounter.current <= 2 || frameCounter.current % 30 === 0) {
+    if (frameCounter.current <= 3 || frameCounter.current % 20 === 0) {
         addDebugMessage(
-        `Tick #${frameCounter.current}: isScanningState=${isScanning}, stream=${!!streamRef.current}, videoEl=${!!videoRef.current?.srcObject}, canvasEl=${!!canvasRef.current}`
+        `Tick #${frameCounter.current}: LoopActive=${isLoopActiveRef.current}, State.isScanning=${isScanning}`
         );
     }
 
-    if (!isScanning || !streamRef.current || !videoRef.current || !canvasRef.current) {
-      if (frameCounter.current <= 5 || frameCounter.current % 30 === 0) {
-        addDebugMessage(
-            `Tick #${frameCounter.current} Exit Early: Conditions not met. isScanningState=${isScanning}, stream=${!!streamRef.current}`
-        );
-      }
+    if (!videoRef.current || !canvasRef.current || !streamRef.current) {
+      addDebugMessage(`Tick #${frameCounter.current} Exit Early: Critical refs missing. LoopActive=${isLoopActiveRef.current}`, true);
+      isLoopActiveRef.current = false;
+      animationFrameId.current = null;
       return;
     }
 
@@ -210,22 +221,17 @@ export default function QrScanner() {
         try {
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             if (imageData.data.some(channel => channel !== 0)) {
-                if (frameCounter.current % 2 === 0) {
-                    // addDebugMessage(`Tick #${frameCounter.current}: 嘗試 jsQR 解碼...`);
-                }
                 const code: QRCode | null = jsQR(imageData.data, imageData.width, imageData.height, {
                   inversionAttempts: 'dontInvert',
                 });
 
                 if (code) {
-                  addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data}" (length: ${code.data?.length})`);
+                  addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data}"`);
                   if (code.data && code.data.trim() !== "") {
                     addDebugMessage(`Tick #${frameCounter.current}: 設定掃描資料: "${code.data}"`);
                     setScannedData(code.data);
-                    stopScan("qr_code_found");
+                    stopScan("qr_code_found"); // This sets isLoopActiveRef=false & isScanning=false
                     return;
-                  } else {
-                    // addDebugMessage(`Tick #${frameCounter.current}: jsQR 資料為空或空白。`);
                   }
                 }
             }
@@ -235,27 +241,23 @@ export default function QrScanner() {
       }
     }
 
-    if (isScanning && streamRef.current) {
+    if (isLoopActiveRef.current) { // Check again before scheduling next frame
         animationFrameId.current = requestAnimationFrame(tick);
     } else {
-        addDebugMessage(`Tick #${frameCounter.current}: isScanning is false or stream lost, not scheduling next frame.`);
-        if(animationFrameId.current) {
-            cancelAnimationFrame(animationFrameId.current);
-            animationFrameId.current = null;
-        }
+        addDebugMessage(`Tick #${frameCounter.current}: isLoopActiveRef is false after processing. Not scheduling next frame.`);
+        animationFrameId.current = null; // Ensure no dangling ID
     }
   };
 
+  // Minimal unmount cleanup
   useEffect(() => {
     return () => {
       addDebugMessage("元件卸載，最終清理 (Component unmounting, final cleanup).");
+      isLoopActiveRef.current = false;
+      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
-      }
-      if (animationFrameId.current) {
-        cancelAnimationFrame(animationFrameId.current);
-        animationFrameId.current = null;
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -276,7 +278,7 @@ export default function QrScanner() {
       <div className="w-full max-w-sm aspect-[4/3] bg-slate-700 rounded-lg overflow-hidden shadow-lg relative border-2 border-slate-600">
         <video
           ref={videoRef}
-          className={`w-full h-full object-cover ${isScanning ? 'block' : 'hidden'}`}
+          className={`w-full h-full object-cover ${isScanning || scannedData ? 'block' : 'hidden'}`} // Keep video visible if data was just scanned
           muted
           autoPlay
           playsInline
@@ -299,7 +301,7 @@ export default function QrScanner() {
                 )}
             </div>
         )}
-        {isScanning && (
+        {isScanning && !scannedData && ( // Show scanning indicator only when actively scanning and no data yet
              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-3/4 h-3/4 border-4 border-dashed border-purple-500 opacity-75 rounded-lg animate-pulse"></div>
             </div>
@@ -315,14 +317,14 @@ export default function QrScanner() {
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-scan-line inline-block mr-2 align-middle"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
           開始掃描
         </button>
-      ) : !isScanning && scannedData ? (
+      ) : !isScanning && scannedData ? ( // Scanned data exists, show rescan button
         <button
             onClick={startScan}
             className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-amber-500 transition-all duration-150 ease-in-out"
         >
             重新掃描
         </button>
-      ) : (
+      ) : ( // isScanning is true, show stop button
         <button
           onClick={() => stopScan("stop_button_click")}
           className="bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-rose-500 transition-all duration-150 ease-in-out"
