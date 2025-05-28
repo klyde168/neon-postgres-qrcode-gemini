@@ -39,6 +39,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   
   const url = new URL(request.url);
   const forceUuid = url.searchParams.get('uuid') === 'true';
+  const skipDb = url.searchParams.get('skipDb') === 'true';
   
   let textToEncode: string | null = null;
   let errorMsg: string | null = null;
@@ -47,11 +48,11 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   let lastScannedId: number | null = null;
   const currentTimestamp = Date.now();
 
-  if (forceUuid) {
-    // 強制產生新的 UUID - 每次都是全新的
+  if (forceUuid || skipDb) {
+    // 強制產生新的 UUID - 每次都是全新的，不查詢資料庫
     textToEncode = randomUUID();
     intent = "loader-force-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] Force UUID generation: "${textToEncode}"`);
+    console.log(`[LOADER ${loaderExecutionId}] Force UUID generation (forceUuid=${forceUuid}, skipDb=${skipDb}): "${textToEncode}"`);
   } else {
     try {
       const client = await pool.connect();
@@ -135,11 +136,12 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   const intent = formData.get("intent") as string | null;
   const timestamp = formData.get("timestamp") as string | null;
   const randomParam = formData.get("random") as string | null;
+  const preventRevalidation = formData.get("preventRevalidation") as string | null;
   let textToEncode: string | null = null;
   let lastScannedId: number | null = null;
   const currentTimestamp = Date.now();
 
-  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}, Client timestamp: ${timestamp}, Random: ${randomParam}`);
+  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}, Client timestamp: ${timestamp}, Random: ${randomParam}, PreventRevalidation: ${preventRevalidation}`);
 
   if (intent === "generate-uuid-via-action") {
     // 每次都產生全新的 UUID，不檢查資料庫，確保唯一性
@@ -238,21 +240,37 @@ export default function GeneratePage() {
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
   const [autoReloadEnabled, setAutoReloadEnabled] = useState(true);
   const [lastKnownScannedId, setLastKnownScannedId] = useState<number | null>(initialLoaderData.lastScannedId || null);
+  const [forceUuidMode, setForceUuidMode] = useState(false); // 新增：強制 UUID 模式
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
   useEffect(() => {
     addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}...", isLatestScan=${initialLoaderData.isLatestScan}, lastScannedId=${initialLoaderData.lastScannedId}`);
-    setCurrentDisplayData(initialLoaderData);
-    if (initialLoaderData.lastScannedId) {
-      setLastKnownScannedId(initialLoaderData.lastScannedId);
+    
+    // 只有在不是強制 UUID 模式時才更新顯示數據
+    if (!forceUuidMode) {
+      setCurrentDisplayData(initialLoaderData);
+      if (initialLoaderData.lastScannedId) {
+        setLastKnownScannedId(initialLoaderData.lastScannedId);
+      }
+    } else {
+      addUiDebugMessage("Force UUID mode active, ignoring loader data update");
     }
-  }, [initialLoaderData, addUiDebugMessage]);
+  }, [initialLoaderData, addUiDebugMessage, forceUuidMode]);
 
   useEffect(() => {
     if (actionData) {
       addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}...", isLatestScan=${actionData.isLatestScan}`);
-      if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
+      
+      // 如果是產生新 UUID 的 action，優先使用 actionData 並設置強制模式
+      if (actionData.intent === "generate-uuid-via-action") {
+        addUiDebugMessage("UUID action detected, forcing display update and setting UUID mode");
+        setCurrentDisplayData(actionData);
+        setForceUuidMode(true); // 設置為強制 UUID 模式
+        if (actionData.lastScannedId) {
+          setLastKnownScannedId(actionData.lastScannedId);
+        }
+      } else if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
         addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
         if (actionData.lastScannedId) {
@@ -280,6 +298,7 @@ export default function GeneratePage() {
 
         if (newTimestamp && newTimestamp !== lastRevalidated) {
           addUiDebugMessage("New scan detected! Revalidating to show latest scanned QR code...");
+          setForceUuidMode(false); // 關閉強制 UUID 模式，允許顯示新掃描的內容
           revalidator.revalidate();
           localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
         } else {
@@ -300,6 +319,7 @@ export default function GeneratePage() {
       const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
       if (event.detail?.timestamp && event.detail.timestamp !== lastRevalidated) {
         addUiDebugMessage("Custom event triggered revalidation...");
+        setForceUuidMode(false); // 關閉強制 UUID 模式
         revalidator.revalidate();
         localStorage.setItem('lastRevalidatedTimestamp', event.detail.timestamp);
       }
@@ -316,6 +336,7 @@ export default function GeneratePage() {
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
         if (latestStoredTimestamp !== lastRevalidated) {
             addUiDebugMessage("Found newer scan data in localStorage on initial mount, revalidating.");
+            setForceUuidMode(false); // 關閉強制 UUID 模式
             revalidator.revalidate();
             localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
         }
@@ -341,13 +362,21 @@ export default function GeneratePage() {
     formData.append("errorCorrectionLevel", errorCorrection);
     formData.append("timestamp", timestamp.toString());
     formData.append("random", randomParam);
+    formData.append("preventRevalidation", "true"); // 防止自動重新驗證
     
     addUiDebugMessage(`Submitting with timestamp: ${timestamp}, random: ${randomParam}`);
-    submit(formData, { method: "post" });
+    submit(formData, { 
+      method: "post",
+      replace: false, // 不替換歷史記錄
+      navigate: false // 不觸發導航，避免 loader 重新執行
+    });
   };
 
   const handleRefreshFromLatestScan = () => {
     addUiDebugMessage("Button click: handleRefreshFromLatestScan");
+    
+    // 關閉強制 UUID 模式，允許顯示最新掃描資料
+    setForceUuidMode(false);
     
     // 添加隨機參數確保不會被緩存
     const timestamp = Date.now();
