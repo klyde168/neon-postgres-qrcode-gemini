@@ -12,6 +12,16 @@ export default function Index() {
   return (
     <div className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 p-6 font-sans">
       <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-2xl">
+        {/* GitHub Version Info */}
+        <div className="mb-6 text-center">
+          <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-slate-700 text-slate-300 border border-slate-600">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+            </svg>
+            GitHub: 6d344ff..4bceb85 main → main
+          </div>
+        </div>
+
         <header className="mb-10 text-center">
           <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-500 to-orange-400 mb-3">
             QR Code 多功能工具
@@ -24,7 +34,7 @@ export default function Index() {
         <div className="grid md:grid-cols-2 gap-8">
           {/* 卡片：產生 QR Code - 連結到 /generate */}
           <Link
-            to="/generate" // 連結到新的產生頁面
+            to="/generate"
             className="group block bg-slate-700 p-6 rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 hover:ring-2 hover:ring-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
           >
             <div className="flex items-center mb-4">

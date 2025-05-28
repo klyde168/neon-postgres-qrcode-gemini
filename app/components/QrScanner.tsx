@@ -36,10 +36,14 @@ export default function QrScanner() {
     if (fetcher.data) {
         addDebugMessage(`Fetcher data received: success=${fetcher.data.success}, message=${fetcher.data.message}, error=${fetcher.data.error}, savedData=${fetcher.data.savedData ? fetcher.data.savedData.substring(0,30)+'...' : 'N/A'}`);
         if (fetcher.data.success && fetcher.data.savedData) {
-            addDebugMessage(`資料成功儲存 (ID: ${fetcher.data.id})。準備觸發 localStorage 更新。`);
+            addDebugMessage(`資料成功儲存 (ID: ${fetcher.data.id})。準備觸發 localStorage 更新和事件。`);
             try {
                 const currentTimestamp = Date.now().toString();
                 const dataToStore = fetcher.data.savedData;
+
+                // 先清除舊的 localStorage 標記，確保有變化
+                const oldTimestamp = localStorage.getItem('latestScannedDataTimestamp');
+                addDebugMessage(`Old timestamp: ${oldTimestamp}, New timestamp: ${currentTimestamp}`);
 
                 localStorage.setItem('latestScannedDataTimestamp', currentTimestamp);
                 addDebugMessage(`localStorage set: latestScannedDataTimestamp = ${currentTimestamp}`);
@@ -47,25 +51,45 @@ export default function QrScanner() {
                 localStorage.setItem('latestScannedDataItem', dataToStore);
                 addDebugMessage(`localStorage set: latestScannedDataItem = ${dataToStore.substring(0,30)}...`);
 
-                addDebugMessage("準備手動派發 storage 事件...");
-                window.dispatchEvent(new StorageEvent('storage', {
-                    key: 'latestScannedDataTimestamp',
-                    newValue: currentTimestamp,
-                    oldValue: localStorage.getItem('latestScannedDataTimestamp'), // Pass the previous value if any
-                    storageArea: localStorage,
-                    url: window.location.href, // Optional, but good practice
-                }));
-                addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
+                // 使用 setTimeout 確保 localStorage 設置完成後再觸發事件
+                setTimeout(() => {
+                    addDebugMessage("準備手動派發 storage 事件...");
+                    
+                    // 創建並派發 storage 事件
+                    const storageEvent = new StorageEvent('storage', {
+                        key: 'latestScannedDataTimestamp',
+                        newValue: currentTimestamp,
+                        oldValue: oldTimestamp,
+                        storageArea: localStorage,
+                        url: window.location.href,
+                    });
+                    
+                    window.dispatchEvent(storageEvent);
+                    addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
 
-                 window.dispatchEvent(new StorageEvent('storage', { // Dispatch for the other key too, for robustness
-                    key: 'latestScannedDataItem',
-                    newValue: dataToStore,
-                    oldValue: localStorage.getItem('latestScannedDataItem'),
-                    storageArea: localStorage,
-                    url: window.location.href,
-                }));
-                addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
+                    // 也為 latestScannedDataItem 派發事件
+                    const dataEvent = new StorageEvent('storage', {
+                        key: 'latestScannedDataItem',
+                        newValue: dataToStore,
+                        oldValue: localStorage.getItem('latestScannedDataItem'),
+                        storageArea: localStorage,
+                        url: window.location.href,
+                    });
+                    
+                    window.dispatchEvent(dataEvent);
+                    addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
 
+                    // 額外觸發一個自定義事件，確保 generate 頁面能夠監聽到
+                    const customEvent = new CustomEvent('newScanComplete', {
+                        detail: {
+                            timestamp: currentTimestamp,
+                            data: dataToStore,
+                            id: fetcher.data?.id
+                        }
+                    });
+                    window.dispatchEvent(customEvent);
+                    addDebugMessage("Custom newScanComplete 事件已派發。");
+                }, 100);
 
             } catch (e) {
                 addDebugMessage(`設定 localStorage 或派發事件時發生錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -75,7 +99,6 @@ export default function QrScanner() {
         }
     }
   }, [fetcher.data, addDebugMessage]);
-
 
   const startScan = () => {
     addDebugMessage("startScan: 嘗試開始掃描...");
@@ -110,7 +133,6 @@ export default function QrScanner() {
         setIsScanning(false);
     }
   }, [addDebugMessage, isScanning]);
-
 
   useEffect(() => {
     let effectScopedStream: MediaStream | null = null;
