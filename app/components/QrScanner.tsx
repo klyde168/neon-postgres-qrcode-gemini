@@ -427,17 +427,46 @@ export default function QrScanner() {
       {scannedData && (
         <div className="mt-4 p-6 bg-slate-700 rounded-lg shadow-inner w-full max-w-sm text-center">
           <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果：</h3>
-          <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md">{scannedData}</p>
-          <div className="mt-4 flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-2">
-            <button onClick={() => { if (navigator.clipboard && scannedData) { navigator.clipboard.writeText(scannedData).then(() => { addDebugMessage('已複製到剪貼簿！'); alert('已複製到剪貼簿！') }).catch(err => { addDebugMessage(`複製失敗: ${err instanceof Error ? err.message : String(err)}`, true); alert('複製失敗'); }); } }} className="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md">複製結果</button>
-            <fetcher.Form method="post" action="/scan" className="w-full sm:w-auto" onSubmit={(e) => { if (!scannedData) e.preventDefault(); }}>
-                 <input type="hidden" name="scannedData" value={scannedData || ""} />
-                 <button type="submit" disabled={fetcher.state === "submitting" || !scannedData} className="w-full bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg shadow-md">{fetcher.state === "submitting" ? "儲存中..." : "儲存到資料庫"}</button>
-            </fetcher.Form>
-          </div>
+          <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md mb-4">{scannedData}</p>
+          
+          {/* 顯示儲存狀態 */}
+          {fetcher.state === "submitting" && (
+            <div className="mb-4 p-3 bg-blue-700 bg-opacity-50 border border-blue-500 text-blue-300 rounded-lg">
+              <div className="flex items-center justify-center">
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                正在自動儲存到資料庫...
+              </div>
+            </div>
+          )}
+          
+          {/* 顯示儲存成功訊息 */}
+          {fetcher.data && fetcher.data.success && (
+            <div className="mb-4 p-3 bg-green-700 bg-opacity-50 border border-green-500 text-green-300 rounded-lg">
+              <div className="flex items-center justify-center">
+                <svg className="mr-2 h-5 w-5 text-green-300" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/>
+                </svg>
+                ✅ 已自動儲存到資料庫！
+              </div>
+            </div>
+          )}
+          
+          {/* 顯示儲存失敗訊息 */}
+          {fetcher.data && !fetcher.data.success && fetcher.data.error && (
+            <div className="mb-4 p-3 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg">
+              <div className="flex items-center justify-center">
+                <svg className="mr-2 h-5 w-5 text-red-300" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd"/>
+                </svg>
+                ❌ 儲存失敗：{fetcher.data.error}
+              </div>
+            </div>
+          )}
         </div>
       )}
-      {fetcher.data && (<div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${fetcher.data.success ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300' : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'}`}><p>{fetcher.data.message || fetcher.data.error}</p></div>)}
     </div>
   );
 }

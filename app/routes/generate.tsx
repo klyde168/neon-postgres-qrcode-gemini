@@ -305,6 +305,7 @@ export default function GeneratePage() {
   const [autoReloadEnabled, setAutoReloadEnabled] = useState(true);
   const [lastKnownScannedId, setLastKnownScannedId] = useState<number | null>(initialLoaderData.lastScannedId || null);
   const [forceUuidMode, setForceUuidMode] = useState(false); // 新增：強制 UUID 模式
+  const [updateInterval, setUpdateInterval] = useState<number>(1000); // 新增：更新間隔（毫秒）
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
@@ -335,7 +336,6 @@ export default function GeneratePage() {
 
     // 使用專用的 API 端點來檢查更新
     const apiUrl = `/api/check-updates?lastKnownId=${lastKnownScannedId || 0}`;
-    addUiDebugMessage(`輪詢請求 URL: ${apiUrl}`);
     
     fetch(apiUrl, {
       method: 'GET',
@@ -346,55 +346,42 @@ export default function GeneratePage() {
       cache: 'no-cache',
     })
     .then(response => {
-      addUiDebugMessage(`輪詢響應狀態: ${response.status}`);
-      addUiDebugMessage(`輪詢響應 Content-Type: ${response.headers.get('content-type')}`);
-      
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
-        // 如果不是 JSON，嘗試讀取為文本看看內容
         return response.text().then(text => {
           addUiDebugMessage(`輪詢響應非 JSON 內容: ${text.substring(0, 200)}...`, true);
-          throw new Error(`Expected JSON, got ${contentType}. Content: ${text.substring(0, 100)}`);
+          throw new Error(`Expected JSON, got ${contentType}`);
         });
       }
       
       return response.json();
     })
     .then(data => {
-      addUiDebugMessage(`輪詢結果: hasUpdate=${data.hasUpdate}, latestId=${data.latestScanId}, lastKnown=${data.lastKnownId}`);
-      
-      if (data.debug) {
-        addUiDebugMessage(`輪詢調試: 查詢行數=${data.debug.queryRows}, 最新資料="${data.debug.latestData}", API ID=${data.debug.apiExecutionId}`);
-      }
-      
       if (data.error) {
         addUiDebugMessage(`輪詢資料庫錯誤: ${data.error}`, true);
         return;
       }
       
       if (data.hasUpdate && data.latestScanId > (lastKnownScannedId || 0)) {
-        addUiDebugMessage(`🔄 檢測到新掃描資料 (ID: ${data.latestScanId} > ${lastKnownScannedId})，自動更新...`);
+        addUiDebugMessage(`🔄 檢測到新掃描資料 (ID: ${data.latestScanId} > ${lastKnownScannedId})，立即更新...`);
         setLastKnownScannedId(data.latestScanId);
         autoRefreshFromLatestScan();
-      } else {
-        addUiDebugMessage(`無新資料 - latest: ${data.latestScanId}, known: ${lastKnownScannedId}, hasUpdate: ${data.hasUpdate}`);
       }
     })
     .catch(err => {
       addUiDebugMessage(`輪詢檢查錯誤: ${err.message}`, true);
-      
-      // 提供更多診斷信息
-      if (err.message.includes('Unexpected token')) {
-        addUiDebugMessage("API 返回非 JSON 格式，檢查 /api/check-updates 路由是否正確設置", true);
-      } else if (err.message.includes('404')) {
-        addUiDebugMessage("API 端點不存在，請確認 app/routes/api.check-updates.ts 檔案存在", true);
-      }
     });
   }, [autoReloadEnabled, forceUuidMode, lastKnownScannedId, autoRefreshFromLatestScan, addUiDebugMessage]);
+
+  // 新增：即時檢查函數（更頻繁的檢查）
+  const instantCheck = useCallback(() => {
+    if (!autoReloadEnabled || forceUuidMode) return;
+    pollForUpdates();
+  }, [autoReloadEnabled, forceUuidMode, pollForUpdates]);
 
   useEffect(() => {
     addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}...", isLatestScan=${initialLoaderData.isLatestScan}, lastScannedId=${initialLoaderData.lastScannedId}`);
@@ -441,24 +428,44 @@ export default function GeneratePage() {
       return;
     }
 
-    addUiDebugMessage(`啟動跨設備更新輪詢機制 - lastKnownScannedId: ${lastKnownScannedId}`);
+    addUiDebugMessage(`啟動即時跨設備更新輪詢 - 間隔: ${updateInterval}ms, lastKnownScannedId: ${lastKnownScannedId}`);
     
     // 立即檢查一次
     addUiDebugMessage("執行初始輪詢檢查...");
-    pollForUpdates();
+    instantCheck();
     
-    // 每 3 秒檢查一次新的掃描資料
-    addUiDebugMessage("設置 3 秒間隔輪詢...");
+    // 設置定時檢查
+    addUiDebugMessage(`設置 ${updateInterval}ms 間隔輪詢...`);
     const pollInterval = setInterval(() => {
-      addUiDebugMessage("執行定時輪詢檢查...");
-      pollForUpdates();
-    }, 3000);
+      instantCheck();
+    }, updateInterval);
+
+    // 額外設置頁面可見性變化時的即時檢查
+    const handleVisibilityChange = () => {
+      if (!document.hidden && autoReloadEnabled) {
+        addUiDebugMessage("頁面重新可見，執行即時檢查...");
+        instantCheck();
+      }
+    };
+
+    // 監聽頁面焦點事件
+    const handleFocus = () => {
+      if (autoReloadEnabled) {
+        addUiDebugMessage("頁面獲得焦點，執行即時檢查...");
+        instantCheck();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       clearInterval(pollInterval);
-      addUiDebugMessage("輪詢機制已停止");
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+      addUiDebugMessage("即時輪詢機制已停止");
     };
-  }, [autoReloadEnabled, pollForUpdates, addUiDebugMessage]);
+  }, [autoReloadEnabled, updateInterval, instantCheck, addUiDebugMessage]);
 
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
@@ -682,29 +689,50 @@ export default function GeneratePage() {
           </p>
           {autoReloadEnabled && (
             <p className="text-xs text-green-400">
-              🔄 跨設備自動更新已啟用 (每 3 秒檢查)
+              ⚡ 即時跨設備更新 (每 {updateInterval === 1000 ? '1 秒' : updateInterval === 500 ? '0.5 秒' : `${updateInterval/1000} 秒`} 檢查)
             </p>
           )}
         </header>
 
-        {/* Auto-reload toggle */}
-        <div className="mb-6 flex items-center justify-center space-x-3">
-          <label className="text-sm text-slate-300">跨設備自動更新:</label>
-          <button
-            onClick={() => setAutoReloadEnabled(!autoReloadEnabled)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              autoReloadEnabled ? 'bg-green-600' : 'bg-slate-600'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                autoReloadEnabled ? 'translate-x-6' : 'translate-x-1'
+        {/* Auto-reload toggle and speed control */}
+        <div className="mb-6 space-y-4">
+          {/* 自動更新開關 */}
+          <div className="flex items-center justify-center space-x-3">
+            <label className="text-sm text-slate-300">即時跨設備更新:</label>
+            <button
+              onClick={() => setAutoReloadEnabled(!autoReloadEnabled)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                autoReloadEnabled ? 'bg-green-600' : 'bg-slate-600'
               }`}
-            />
-          </button>
-          <span className={`text-xs ${autoReloadEnabled ? 'text-green-400' : 'text-slate-400'}`}>
-            {autoReloadEnabled ? '開啟' : '關閉'}
-          </span>
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  autoReloadEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+            <span className={`text-xs ${autoReloadEnabled ? 'text-green-400' : 'text-slate-400'}`}>
+              {autoReloadEnabled ? '開啟' : '關閉'}
+            </span>
+          </div>
+          
+          {/* 更新頻率選擇 */}
+          {autoReloadEnabled && (
+            <div className="flex items-center justify-center space-x-3">
+              <label className="text-sm text-slate-300">更新頻率:</label>
+              <select
+                value={updateInterval}
+                onChange={(e) => setUpdateInterval(parseInt(e.target.value, 10))}
+                className="px-3 py-1 bg-slate-700 border border-slate-600 rounded-md text-slate-200 text-sm focus:ring-green-500 focus:border-green-500"
+              >
+                <option value={500}>⚡ 極速 (0.5秒)</option>
+                <option value={1000}>🚀 即時 (1秒)</option>
+                <option value={2000}>⏱️ 快速 (2秒)</option>
+                <option value={3000}>🔄 標準 (3秒)</option>
+                <option value={5000}>🐌 省電 (5秒)</option>
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -765,13 +793,13 @@ export default function GeneratePage() {
                 <button
                     type="button"
                     onClick={() => {
-                        addUiDebugMessage("手動觸發輪詢檢查...");
-                        pollForUpdates();
+                        addUiDebugMessage("手動觸發即時檢查...");
+                        instantCheck();
                     }}
                     className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-orange-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-search inline-block mr-2 align-middle"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                    測試輪詢
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-zap inline-block mr-2 align-middle"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    即時檢查
                 </button>
             </div>
         </div>
