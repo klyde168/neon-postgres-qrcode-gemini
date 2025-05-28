@@ -132,16 +132,14 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
   const actionExecutionId = randomUUID().substring(0,8);
   console.log(`[ACTION ${actionExecutionId}] Initiated.`);
+  
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
-  const timestamp = formData.get("timestamp") as string | null;
-  const randomParam = formData.get("random") as string | null;
-  const preventRevalidation = formData.get("preventRevalidation") as string | null;
   let textToEncode: string | null = null;
   let lastScannedId: number | null = null;
   const currentTimestamp = Date.now();
 
-  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}, Client timestamp: ${timestamp}, Random: ${randomParam}, PreventRevalidation: ${preventRevalidation}`);
+  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
 
   if (intent === "generate-uuid-via-action") {
     // 每次都產生全新的 UUID，不檢查資料庫，確保唯一性
@@ -352,24 +350,56 @@ export default function GeneratePage() {
   const handleGenerateNewUuid = () => {
     addUiDebugMessage("Button click: handleGenerateNewUuid - 強制產生新 UUID");
     
-    // 添加隨機參數確保不會被緩存
-    const timestamp = Date.now();
-    const randomParam = Math.random().toString(36).substring(7);
+    // 直接在客戶端生成 UUID 並顯示，避免服務器端問題
+    const newUuid = crypto.randomUUID ? crypto.randomUUID() : 
+      'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
     
-    const formData = new FormData();
-    formData.append("intent", "generate-uuid-via-action");
-    formData.append("size", qrSize);
-    formData.append("errorCorrectionLevel", errorCorrection);
-    formData.append("timestamp", timestamp.toString());
-    formData.append("random", randomParam);
-    formData.append("preventRevalidation", "true"); // 防止自動重新驗證
+    const newDisplayData: QrCodeResponse = {
+      qrCodeDataUrl: null,
+      error: null,
+      sourceText: newUuid,
+      intent: "client-generated-uuid",
+      timestamp: Date.now(),
+      isLatestScan: false,
+      lastScannedId: null
+    };
     
-    addUiDebugMessage(`Submitting with timestamp: ${timestamp}, random: ${randomParam}`);
-    submit(formData, { 
-      method: "post",
-      replace: false, // 不替換歷史記錄
-      navigate: false // 不觸發導航，避免 loader 重新執行
-    });
+    addUiDebugMessage(`Client-side generated UUID: ${newUuid}`);
+    
+    // 使用動態 import 來載入 qrcode 庫
+    if (typeof window !== 'undefined') {
+      import('qrcode').then((QRCodeModule) => {
+        const QRCode = QRCodeModule.default || QRCodeModule;
+        QRCode.toDataURL(newUuid, {
+          errorCorrectionLevel: errorCorrection,
+          width: parseInt(qrSize, 10),
+          margin: 2,
+          color: { dark: "#0F172A", light: "#FFFFFF" }
+        }).then((qrCodeDataUrl: string) => {
+          newDisplayData.qrCodeDataUrl = qrCodeDataUrl;
+          setCurrentDisplayData(newDisplayData);
+          setForceUuidMode(true);
+          addUiDebugMessage(`QR Code generated successfully for UUID: ${newUuid}`);
+        }).catch((err: any) => {
+          addUiDebugMessage(`QR Code generation failed: ${err.message}`, true);
+          newDisplayData.error = "QR Code 生成失敗";
+          setCurrentDisplayData(newDisplayData);
+        });
+      }).catch((err: any) => {
+        addUiDebugMessage(`QRCode import failed: ${err.message}`, true);
+        // 退回到服務器端生成
+        addUiDebugMessage("Falling back to server-side generation...");
+        const formData = new FormData();
+        formData.append("intent", "generate-uuid-via-action");
+        formData.append("size", qrSize);
+        formData.append("errorCorrectionLevel", errorCorrection);
+        submit(formData, { method: "post" });
+      });
+    }
   };
 
   const handleRefreshFromLatestScan = () => {
@@ -378,23 +408,19 @@ export default function GeneratePage() {
     // 關閉強制 UUID 模式，允許顯示最新掃描資料
     setForceUuidMode(false);
     
-    // 添加隨機參數確保不會被緩存
-    const timestamp = Date.now();
-    const randomParam = Math.random().toString(36).substring(7);
-    
     const formData = new FormData();
     formData.append("intent", "generate-from-latest-scan");
     formData.append("size", qrSize);
     formData.append("errorCorrectionLevel", errorCorrection);
-    formData.append("timestamp", timestamp.toString());
-    formData.append("random", randomParam);
     
-    addUiDebugMessage(`Refreshing with timestamp: ${timestamp}, random: ${randomParam}`);
+    addUiDebugMessage(`Submitting latest scan refresh action...`);
     submit(formData, { method: "post" });
   };
 
   const getStatusMessage = () => {
-    if (currentDisplayData?.intent === "loader-force-uuid") {
+    if (currentDisplayData?.intent === "client-generated-uuid") {
+      return "🆕 顯示客戶端生成的新 UUID QR Code。";
+    } else if (currentDisplayData?.intent === "loader-force-uuid") {
       return "🆕 顯示強制產生的新 UUID QR Code。";
     } else if (currentDisplayData?.intent === "loader-initial-uuid" || currentDisplayData?.intent?.includes("fallback-uuid")) {
       return "初始顯示 UUID QR Code。掃描新 QR Code 後將自動更新於此。";
@@ -527,7 +553,9 @@ export default function GeneratePage() {
                   最新掃描
                 </span>
               )}
-              {(currentDisplayData?.intent === "generate-uuid-via-action" || currentDisplayData?.intent === "loader-force-uuid") && (
+              {(currentDisplayData?.intent === "generate-uuid-via-action" || 
+                currentDisplayData?.intent === "loader-force-uuid" ||
+                currentDisplayData?.intent === "client-generated-uuid") && (
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
                   <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 8 8">
                     <circle cx="4" cy="4" r="3"/>
