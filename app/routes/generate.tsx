@@ -145,31 +145,52 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     console.log(`[ACTION ${actionExecutionId}] UUID verification - Length: ${textToEncode.length}, Format check: ${/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(textToEncode)}`);
   } else if (intent === "check-for-updates") {
     // 檢查是否有新的掃描資料
+    console.log(`[ACTION ${actionExecutionId}] Processing check-for-updates`);
+    
     const lastKnownIdStr = formData.get("lastKnownId") as string;
     const lastKnownId = parseInt(lastKnownIdStr, 10) || 0;
+    
+    console.log(`[ACTION ${actionExecutionId}] Checking updates - lastKnownId: ${lastKnownId}`);
     
     try {
       const client = await pool.connect();
       try {
-        const checkQuery = 'SELECT id FROM scanned_data ORDER BY id DESC LIMIT 1';
+        const checkQuery = 'SELECT id, data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
         const res = await client.query(checkQuery);
+        
+        console.log(`[ACTION ${actionExecutionId}] Query result: ${res.rows.length} rows`);
+        
+        if (res.rows.length > 0) {
+          console.log(`[ACTION ${actionExecutionId}] Latest scan: ID=${res.rows[0].id}, data="${res.rows[0].data?.substring(0,30)}..."`);
+        }
         
         const hasUpdate = res.rows.length > 0 && res.rows[0].id > lastKnownId;
         const latestScanId = res.rows.length > 0 ? res.rows[0].id : 0;
         
-        console.log(`[ACTION ${actionExecutionId}] Update check - lastKnown: ${lastKnownId}, latest: ${latestScanId}, hasUpdate: ${hasUpdate}`);
+        console.log(`[ACTION ${actionExecutionId}] Update check result - lastKnown: ${lastKnownId}, latest: ${latestScanId}, hasUpdate: ${hasUpdate}`);
         
-        return json({
+        const result = {
           hasUpdate,
           latestScanId,
-          lastKnownId
-        });
+          lastKnownId,
+          debug: {
+            queryRows: res.rows.length,
+            latestData: res.rows.length > 0 ? res.rows[0].data?.substring(0,50) : null
+          }
+        };
+        
+        return json(result);
       } finally {
         client.release();
       }
     } catch (dbError: any) {
       console.error(`[ACTION ${actionExecutionId}] Database error during update check:`, dbError.message);
-      return json({ hasUpdate: false, latestScanId: 0, lastKnownId });
+      return json({ 
+        hasUpdate: false, 
+        latestScanId: 0, 
+        lastKnownId,
+        error: dbError.message 
+      });
     }
   } else if (intent === "generate-from-latest-scan") {
     // 從資料庫獲取最新掃描的資料
@@ -286,8 +307,11 @@ export default function GeneratePage() {
   // 新增：輪詢檢查最新掃描資料
   const pollForUpdates = useCallback(() => {
     if (!autoReloadEnabled || forceUuidMode) {
+      addUiDebugMessage(`輪詢跳過 - autoReload: ${autoReloadEnabled}, forceUuid: ${forceUuidMode}`);
       return;
     }
+
+    addUiDebugMessage(`輪詢檢查更新 - lastKnownId: ${lastKnownScannedId}`);
 
     // 檢查資料庫中是否有比當前更新的掃描資料
     fetch('/generate', {
@@ -300,12 +324,31 @@ export default function GeneratePage() {
         lastKnownId: lastKnownScannedId?.toString() || '0'
       })
     })
-    .then(response => response.json())
+    .then(response => {
+      addUiDebugMessage(`輪詢響應狀態: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    })
     .then(data => {
+      addUiDebugMessage(`輪詢結果: hasUpdate=${data.hasUpdate}, latestId=${data.latestScanId}, lastKnown=${data.lastKnownId}`);
+      
+      if (data.debug) {
+        addUiDebugMessage(`輪詢調試: 查詢行數=${data.debug.queryRows}, 最新資料="${data.debug.latestData}"`);
+      }
+      
+      if (data.error) {
+        addUiDebugMessage(`輪詢資料庫錯誤: ${data.error}`, true);
+        return;
+      }
+      
       if (data.hasUpdate && data.latestScanId > (lastKnownScannedId || 0)) {
-        addUiDebugMessage(`檢測到新掃描資料 (ID: ${data.latestScanId})，自動更新...`);
-        autoRefreshFromLatestScan();
+        addUiDebugMessage(`🔄 檢測到新掃描資料 (ID: ${data.latestScanId} > ${lastKnownScannedId})，自動更新...`);
         setLastKnownScannedId(data.latestScanId);
+        autoRefreshFromLatestScan();
+      } else {
+        addUiDebugMessage(`無新資料 - latest: ${data.latestScanId}, known: ${lastKnownScannedId}, hasUpdate: ${data.hasUpdate}`);
       }
     })
     .catch(err => {
@@ -354,17 +397,20 @@ export default function GeneratePage() {
   // 新增：設置輪詢機制檢查跨設備更新
   useEffect(() => {
     if (!autoReloadEnabled) {
-      addUiDebugMessage("輪詢已禁用");
+      addUiDebugMessage("輪詢已禁用 - autoReloadEnabled = false");
       return;
     }
 
-    addUiDebugMessage("啟動跨設備更新輪詢機制...");
+    addUiDebugMessage(`啟動跨設備更新輪詢機制 - lastKnownScannedId: ${lastKnownScannedId}`);
     
     // 立即檢查一次
+    addUiDebugMessage("執行初始輪詢檢查...");
     pollForUpdates();
     
     // 每 3 秒檢查一次新的掃描資料
+    addUiDebugMessage("設置 3 秒間隔輪詢...");
     const pollInterval = setInterval(() => {
+      addUiDebugMessage("執行定時輪詢檢查...");
       pollForUpdates();
     }, 3000);
 
@@ -657,7 +703,7 @@ export default function GeneratePage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <button
                     type="button"
                     onClick={handleRefreshFromLatestScan}
@@ -674,6 +720,18 @@ export default function GeneratePage() {
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw inline-block mr-2 align-middle"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M3 21a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 16"/><path d="M21 11v5h-5"/></svg>
                     產生新 UUID
+                </button>
+
+                <button
+                    type="button"
+                    onClick={() => {
+                        addUiDebugMessage("手動觸發輪詢檢查...");
+                        pollForUpdates();
+                    }}
+                    className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-orange-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-search inline-block mr-2 align-middle"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    測試輪詢
                 </button>
             </div>
         </div>
