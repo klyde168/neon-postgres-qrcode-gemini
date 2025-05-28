@@ -48,7 +48,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   const currentTimestamp = Date.now();
 
   if (forceUuid) {
-    // 強制產生新的 UUID
+    // 強制產生新的 UUID - 每次都是全新的
     textToEncode = randomUUID();
     intent = "loader-force-uuid";
     console.log(`[LOADER ${loaderExecutionId}] Force UUID generation: "${textToEncode}"`);
@@ -65,9 +65,10 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
           lastScannedId = res.rows[0].id;
           console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data (ID: ${res.rows[0].id}): "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
         } else {
+          // 沒有掃描資料時，產生新的 UUID
           textToEncode = randomUUID();
           intent = "loader-initial-uuid";
-          console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated UUID: "${textToEncode}"`);
+          console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated NEW UUID: "${textToEncode}"`);
         }
       } finally {
         client.release();
@@ -76,9 +77,10 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
     } catch (dbError: any) {
       console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
       errorMsg = "讀取最新掃描資料時發生錯誤。";
+      // 資料庫錯誤時，產生新的 UUID
       textToEncode = randomUUID();
       intent = "loader-db-error-fallback-uuid";
-      console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
+      console.log(`[LOADER ${loaderExecutionId}] DB error, generated NEW fallback UUID: "${textToEncode}"`);
     }
   }
 
@@ -90,11 +92,11 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 
   console.log(`[LOADER ${loaderExecutionId}] Text to encode: "${textToEncode}"`);
   
-  // 確保 textToEncode 不為 null
+  // 確保 textToEncode 不為 null，最後的安全檢查
   if (!textToEncode) {
     textToEncode = randomUUID();
     intent = "loader-emergency-fallback-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] Emergency fallback UUID: "${textToEncode}"`);
+    console.log(`[LOADER ${loaderExecutionId}] Emergency fallback NEW UUID: "${textToEncode}"`);
   }
   
   try {
@@ -131,16 +133,20 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   console.log(`[ACTION ${actionExecutionId}] Initiated.`);
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
+  const timestamp = formData.get("timestamp") as string | null;
+  const randomParam = formData.get("random") as string | null;
   let textToEncode: string | null = null;
   let lastScannedId: number | null = null;
   const currentTimestamp = Date.now();
 
-  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
+  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}, Client timestamp: ${timestamp}, Random: ${randomParam}`);
 
   if (intent === "generate-uuid-via-action") {
-    // 每次都產生全新的 UUID，不檢查資料庫
-    textToEncode = randomUUID();
-    console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
+    // 每次都產生全新的 UUID，不檢查資料庫，確保唯一性
+    const newUuid = randomUUID();
+    textToEncode = newUuid;
+    console.log(`[ACTION ${actionExecutionId}] New UNIQUE UUID generated: "${textToEncode}"`);
+    console.log(`[ACTION ${actionExecutionId}] UUID verification - Length: ${textToEncode.length}, Format check: ${/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(textToEncode)}`);
   } else if (intent === "generate-from-latest-scan") {
     // 從資料庫獲取最新掃描的資料
     try {
@@ -153,16 +159,18 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
           lastScannedId = res.rows[0].id;
           console.log(`[ACTION ${actionExecutionId}] Using latest scanned data (ID: ${res.rows[0].id}): "${textToEncode}"`);
         } else {
+          // 如果沒有掃描資料，產生新的 UUID
           textToEncode = randomUUID();
-          console.log(`[ACTION ${actionExecutionId}] No latest scan found, generated UUID: "${textToEncode}"`);
+          console.log(`[ACTION ${actionExecutionId}] No latest scan found, generated NEW UUID: "${textToEncode}"`);
         }
       } finally {
         client.release();
       }
     } catch (dbError: any) {
       console.error(`[ACTION ${actionExecutionId}] Database error:`, dbError.message);
+      // 資料庫錯誤時，產生新的 UUID
       textToEncode = randomUUID();
-      console.log(`[ACTION ${actionExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
+      console.log(`[ACTION ${actionExecutionId}] DB error, generated NEW fallback UUID: "${textToEncode}"`);
     }
   } else {
     console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
@@ -181,10 +189,10 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   const errorCorrectionLevelValue = formData.get("errorCorrectionLevel") || "H";
   console.log(`[ACTION ${actionExecutionId}] QR Params: size=${sizeValue}, ecLevel=${errorCorrectionLevelValue}`);
 
-  // 確保 textToEncode 不為 null
+  // 確保 textToEncode 不為 null，最後的安全檢查
   if (!textToEncode) {
     textToEncode = randomUUID();
-    console.log(`[ACTION ${actionExecutionId}] Emergency fallback UUID: "${textToEncode}"`);
+    console.log(`[ACTION ${actionExecutionId}] Emergency fallback NEW UUID: "${textToEncode}"`);
   }
 
   try {
@@ -322,19 +330,37 @@ export default function GeneratePage() {
 
   const handleGenerateNewUuid = () => {
     addUiDebugMessage("Button click: handleGenerateNewUuid - 強制產生新 UUID");
+    
+    // 添加隨機參數確保不會被緩存
+    const timestamp = Date.now();
+    const randomParam = Math.random().toString(36).substring(7);
+    
     const formData = new FormData();
     formData.append("intent", "generate-uuid-via-action");
     formData.append("size", qrSize);
     formData.append("errorCorrectionLevel", errorCorrection);
+    formData.append("timestamp", timestamp.toString());
+    formData.append("random", randomParam);
+    
+    addUiDebugMessage(`Submitting with timestamp: ${timestamp}, random: ${randomParam}`);
     submit(formData, { method: "post" });
   };
 
   const handleRefreshFromLatestScan = () => {
     addUiDebugMessage("Button click: handleRefreshFromLatestScan");
+    
+    // 添加隨機參數確保不會被緩存
+    const timestamp = Date.now();
+    const randomParam = Math.random().toString(36).substring(7);
+    
     const formData = new FormData();
     formData.append("intent", "generate-from-latest-scan");
     formData.append("size", qrSize);
     formData.append("errorCorrectionLevel", errorCorrection);
+    formData.append("timestamp", timestamp.toString());
+    formData.append("random", randomParam);
+    
+    addUiDebugMessage(`Refreshing with timestamp: ${timestamp}, random: ${randomParam}`);
     submit(formData, { method: "post" });
   };
 
