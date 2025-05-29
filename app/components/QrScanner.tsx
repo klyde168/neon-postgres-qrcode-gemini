@@ -1,3 +1,4 @@
+
 // app/components/QrScanner.tsx
 import { useState, useRef, useEffect, useCallback } from 'react';
 import jsQR, { QRCode } from 'jsqr';
@@ -16,23 +17,16 @@ interface QrScannerProps {
   formatTimeDifference: (diffInSeconds: number) => string;
 }
 
-// 解析 QR Code 時間戳
+// 解析 QR Code 時間戳（僅處理毫秒格式）
 const parseQrCodeTimestamp = (data: string): Date | null => {
   try {
-    // 檢查是否為 ISO 8601 格式
-    if (data.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
-      return new Date(data);
-    }
-    // 檢查是否為純數字時間戳（秒或毫秒）
+    // 檢查是否為毫秒時間戳（10-13 位數字）
     if (/^\d{10,13}$/.test(data)) {
       const timestamp = parseInt(data, 10);
+      // 假設 10 位為秒，轉為毫秒；13 位直接使用
       return new Date(timestamp < 10000000000 ? timestamp * 1000 : timestamp);
     }
-    // 檢查是否為 UUID 格式（簡單檢查）
-    if (data.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-      return null; // UUID 不含時間資訊
-    }
-    return null; // 其他格式
+    return null; // 非毫秒時間戳
   } catch (error) {
     return null;
   }
@@ -43,6 +37,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
   const [error, setError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(autoStart);
   const [scanTime, setScanTime] = useState<Date | null>(null);
+  const [validationResult, setValidationResult] = useState<{ message: string; isValid: boolean } | null>(null);
   const isLoopActiveRef = useRef<boolean>(false);
   const [cameraPermissionError, setCameraPermissionError] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -60,11 +55,13 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
     setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
   }, []);
 
+  // 處理 fetcher 回應
   useEffect(() => {
     if (fetcher.data) {
       addDebugMessage(`Fetcher data received: success=${fetcher.data.success}, message=${fetcher.data.message}, error=${fetcher.data.error}, savedData=${fetcher.data.savedData ? fetcher.data.savedData.substring(0,30)+'...' : 'N/A'}`);
       if (fetcher.data.success && fetcher.data.savedData) {
         addDebugMessage(`資料成功儲存 (ID: ${fetcher.data.id})。準備觸發 localStorage 更新。`);
+        setValidationResult({ message: '資料已成功儲存到資料庫！', isValid: true });
         try {
           const currentTimestamp = Date.now().toString();
           const dataToStore = fetcher.data.savedData;
@@ -98,6 +95,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
         }
       } else if (fetcher.data && !fetcher.data.success && fetcher.data.error) {
         addDebugMessage(`儲存資料失敗: ${fetcher.data.error}`, true);
+        setValidationResult({ message: `儲存失敗: ${fetcher.data.error}`, isValid: false });
       }
     }
   }, [fetcher.data, addDebugMessage]);
@@ -108,6 +106,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
     setScanTime(null);
     setError(null);
     setCameraPermissionError(false);
+    setValidationResult(null);
     setDebugMessages(prev => ["日誌已清除..."]);
     frameCounter.current = 0;
     setIsScanning(true);
@@ -286,14 +285,29 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
     if (isLoopActiveRef.current) animationFrameId.current = requestAnimationFrame(tick);
   };
 
-  // 自動儲存邏輯
+  // 自動儲存邏輯（添加時間差距檢查）
   useEffect(() => {
     if (scannedData && scanTime && fetcher.state === "idle") {
       addDebugMessage("檢查是否需要自動儲存到資料庫...");
-      const formData = new FormData();
-      formData.append("scannedData", scannedData);
-      addDebugMessage("立即儲存到資料庫...");
-      fetcher.submit(formData, { method: "post", action: "/scan" });
+      const qrCodeTime = parseQrCodeTimestamp(scannedData);
+      if (!qrCodeTime) {
+        addDebugMessage("無法解析 QR Code 時間戳，取消儲存");
+        setValidationResult({ message: "無效的 QR Code 時間戳", isValid: false });
+        return;
+      }
+
+      const timeDifferenceMs = scanTime.getTime() - qrCodeTime.getTime();
+      const timeDifferenceSec = Math.floor(timeDifferenceMs / 1000);
+
+      if (timeDifferenceSec <= 5) {
+        addDebugMessage(`時間差距 ${timeDifferenceSec} 秒，允許儲存到資料庫`);
+        const formData = new FormData();
+        formData.append("scannedData", scannedData);
+        fetcher.submit(formData, { method: "post", action: "/scan" });
+      } else {
+        addDebugMessage(`時間差距 ${timeDifferenceSec} 秒，超過 5 秒，QR Code 已過期`);
+        setValidationResult({ message: "QR Code 已過期，請重新掃描", isValid: false });
+      }
     }
   }, [scannedData, scanTime, fetcher, addDebugMessage]);
 
@@ -435,6 +449,15 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
               )}
             </div>
           </div>
+          {validationResult && (
+            <div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${
+              validationResult.isValid
+                ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300'
+                : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'
+            }`}>
+              <p>{validationResult.message}</p>
+            </div>
+          )}
           <div className="mt-4 flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-2">
             <button 
               onClick={() => { 
@@ -456,23 +479,13 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
               <input type="hidden" name="scannedData" value={scannedData || ""} />
               <button 
                 type="submit" 
-                disabled={fetcher.state === "submitting" || !scannedData} 
+                disabled={fetcher.state === "submitting" || !scannedData || (validationResult ? !validationResult.isValid : false)} 
                 className="w-full bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg shadow-md"
               >
                 {fetcher.state === "submitting" ? "儲存中..." : "儲存到資料庫"}
               </button>
             </fetcher.Form>
           </div>
-        </div>
-      )}
-      
-      {fetcher.data && (
-        <div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${
-          fetcher.data.success 
-            ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300' 
-            : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'
-        }`}>
-          <p>{fetcher.data.message || fetcher.data.error}</p>
         </div>
       )}
     </div>
