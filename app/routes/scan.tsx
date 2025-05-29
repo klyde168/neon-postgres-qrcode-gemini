@@ -12,9 +12,9 @@ export const meta: MetaFunction = () => {
 };
 
 // 解析 QR Code 內容中的時間戳記
-function extractTimestampFromQRCode(qrContent: string): number | null {
+function extractTimestampFromQRCode(qrContent: string): { timestamp: number | null, method: string } {
   try {
-    // 嘗試多種時間格式的解析
+    console.log(`[時間解析] 開始解析 QR Code 內容: "${qrContent}"`);
     
     // 格式1: 純數字時間戳記 (13位毫秒或10位秒)
     const numberMatch = qrContent.match(/\b(\d{10,13})\b/);
@@ -24,7 +24,8 @@ function extractTimestampFromQRCode(qrContent: string): number | null {
       const finalTimestamp = timestamp.toString().length === 10 ? timestamp * 1000 : timestamp;
       // 驗證是否為合理的時間戳記 (2000年後到2100年前)
       if (finalTimestamp > 946684800000 && finalTimestamp < 4102444800000) {
-        return finalTimestamp;
+        console.log(`[時間解析] 使用數字時間戳記: ${numberMatch[1]} -> ${finalTimestamp}`);
+        return { timestamp: finalTimestamp, method: '數字時間戳記' };
       }
     }
     
@@ -33,38 +34,55 @@ function extractTimestampFromQRCode(qrContent: string): number | null {
     if (isoMatch) {
       const date = new Date(isoMatch[1]);
       if (!isNaN(date.getTime())) {
-        return date.getTime();
+        console.log(`[時間解析] 使用 ISO 格式: ${isoMatch[1]} -> ${date.getTime()}`);
+        return { timestamp: date.getTime(), method: 'ISO 8601 格式' };
       }
     }
     
-    // 格式3: 其他常見日期格式
+    // 格式3: 台灣時間格式 (YYYY/MM/DD HH:mm:ss)
+    const twDateMatch = qrContent.match(/(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})/);
+    if (twDateMatch) {
+      // 假設這是台灣時間，需要正確解析
+      const dateStr = twDateMatch[1].replace(/\//g, '-'); // 轉換為標準格式
+      const date = new Date(dateStr);
+      if (!isNaN(date.getTime())) {
+        console.log(`[時間解析] 使用台灣時間格式: ${twDateMatch[1]} -> ${dateStr} -> ${date.getTime()}`);
+        console.log(`[時間解析] 解析後的時間: ${formatTimestamp(date.getTime())}`);
+        return { timestamp: date.getTime(), method: '台灣時間格式' };
+      }
+    }
+    
+    // 格式4: 其他常見日期格式
     const dateFormats = [
-      /(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})/,  // YYYY/MM/DD HH:mm:ss
-      /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/,  // MM/DD/YYYY HH:mm:ss
-      /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/     // YYYY-MM-DD HH:mm:ss
+      { regex: /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/, name: 'MM/DD/YYYY 格式' },
+      { regex: /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/, name: 'YYYY-MM-DD 格式' }
     ];
     
     for (const format of dateFormats) {
-      const match = qrContent.match(format);
+      const match = qrContent.match(format.regex);
       if (match) {
         const date = new Date(match[1]);
         if (!isNaN(date.getTime())) {
-          return date.getTime();
+          console.log(`[時間解析] 使用 ${format.name}: ${match[1]} -> ${date.getTime()}`);
+          return { timestamp: date.getTime(), method: format.name };
         }
       }
     }
     
-    return null;
+    console.log(`[時間解析] 無法解析時間戳記從內容: "${qrContent}"`);
+    return { timestamp: null, method: '無法解析' };
   } catch (error) {
-    console.error("Error parsing timestamp from QR code:", error);
-    return null;
+    console.error("[時間解析] 解析錯誤:", error);
+    return { timestamp: null, method: '解析錯誤' };
   }
 }
 
-// 格式化時間顯示
+// 格式化時間顯示（使用 UTC+08:00 時區）
 function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp);
+  // 確保使用 UTC+08:00 時區 (Asia/Taipei)
   return date.toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -73,6 +91,25 @@ function formatTimestamp(timestamp: number): string {
     second: '2-digit',
     hour12: false
   });
+}
+
+// 格式化時間差距顯示
+function formatTimeDifference(seconds: number): string {
+  const absSeconds = Math.abs(seconds);
+  const sign = seconds >= 0 ? '+' : '-';
+  
+  if (absSeconds < 60) {
+    return `${sign}${absSeconds} 秒`;
+  } else if (absSeconds < 3600) {
+    const minutes = Math.floor(absSeconds / 60);
+    const remainingSeconds = absSeconds % 60;
+    return `${sign}${minutes} 分 ${remainingSeconds} 秒`;
+  } else {
+    const hours = Math.floor(absSeconds / 3600);
+    const minutes = Math.floor((absSeconds % 3600) / 60);
+    const remainingSeconds = absSeconds % 60;
+    return `${sign}${hours} 時 ${minutes} 分 ${remainingSeconds} 秒`;
+  }
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -94,12 +131,16 @@ export async function action({ request }: ActionFunctionArgs) {
   const timeDifference = Math.floor((currentTimestamp - scanTimestamp) / 1000); // 時間差（秒）
 
   // 解析 QR Code 內容中的時間戳記
-  const qrTimestamp = extractTimestampFromQRCode(scannedData);
+  const qrTimestampResult = extractTimestampFromQRCode(scannedData);
+  const qrTimestamp = qrTimestampResult.timestamp;
+  
+  console.log(`[Action] QR Code 時間解析結果: ${qrTimestampResult.method}, 時間戳記: ${qrTimestamp}`);
   
   // 計算掃描時間與 QR Code 內容時間的差距
   let qrTimeDifference: number | null = null;
   if (qrTimestamp) {
     qrTimeDifference = Math.floor((scanTimestamp - qrTimestamp) / 1000);
+    console.log(`[Action] 時間差距計算: 掃描時間(${scanTimestamp}) - QR時間(${qrTimestamp}) = ${qrTimeDifference} 秒`);
   }
 
   // 檢查掃描後的時間差是否在5秒內
@@ -111,7 +152,9 @@ export async function action({ request }: ActionFunctionArgs) {
       scanTime: formatTimestamp(scanTimestamp),
       currentTime: formatTimestamp(currentTimestamp),
       qrTimestamp: qrTimestamp ? formatTimestamp(qrTimestamp) : null,
-      qrTimeDifference
+      qrTimeDifference,
+      qrTimeDifferenceFormatted: qrTimeDifference !== null ? formatTimeDifference(qrTimeDifference) : null,
+      qrParseMethod: qrTimestampResult.method
     }, { status: 400 });
   }
 
@@ -133,7 +176,9 @@ export async function action({ request }: ActionFunctionArgs) {
         currentTime: formatTimestamp(currentTimestamp),
         savedTime: formatTimestamp(savedTimestamp),
         qrTimestamp: qrTimestamp ? formatTimestamp(qrTimestamp) : null,
-        qrTimeDifference
+        qrTimeDifference,
+        qrTimeDifferenceFormatted: qrTimeDifference !== null ? formatTimeDifference(qrTimeDifference) : null,
+        qrParseMethod: qrTimestampResult.method
       });
     } finally {
       client.release();

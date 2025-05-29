@@ -15,6 +15,7 @@ interface ScanActionData {
   savedTime?: string;
   qrTimestamp?: string | null;
   qrTimeDifference?: number | null;
+  qrTimeDifferenceFormatted?: string | null;
 }
 
 export default function QrScanner() {
@@ -433,7 +434,8 @@ export default function QrScanner() {
                         ? 'text-yellow-300' 
                         : 'text-red-300'
                   }`}>
-                    {fetcher.data.qrTimeDifference > 0 ? '+' : ''}{fetcher.data.qrTimeDifference} 秒
+                    {fetcher.data.qrTimeDifferenceFormatted || 
+                     `${fetcher.data.qrTimeDifference > 0 ? '+' : ''}${fetcher.data.qrTimeDifference} 秒`}
                   </span>
                 </div>
               )}
