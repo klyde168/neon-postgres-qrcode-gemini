@@ -4,10 +4,27 @@ import { Link, json } from "@remix-run/react";
 import QrScanner from "~/components/QrScanner";
 import { pool } from "db.server";
 
+// 格式化時間差距
+const formatTimeDifference = (diffInSeconds: number): string => {
+  const absDiff = Math.abs(diffInSeconds);
+  if (absDiff < 60) {
+    return `${Math.floor(absDiff)} 秒`;
+  } else if (absDiff < 3600) {
+    const minutes = Math.floor(absDiff / 60);
+    const seconds = Math.floor(absDiff % 60);
+    return `${minutes} 分 ${seconds} 秒`;
+  } else {
+    const hours = Math.floor(absDiff / 3600);
+    const minutes = Math.floor((absDiff % 3600) / 60);
+    const seconds = Math.floor(absDiff % 60);
+    return `${hours} 時 ${minutes} 分 ${seconds} 秒`;
+  }
+};
+
 export const meta: MetaFunction = () => {
   return [
     { title: "掃描 QR Code" },
-    { name: "description", content: "使用相機掃描 QR Code" },
+    { name: "description", content: "使用相機自動掃描 QR Code 並顯示時間差距" },
   ];
 };
 
@@ -81,18 +98,18 @@ export default function ScanPage() {
             QR Code 掃描器
           </h1>
           <p className="text-slate-400">
-            將 QR Code 對準相機鏡頭以進行掃描。
+            將 QR Code 對準相機鏡頭以進行自動掃描。
           </p>
         </header>
 
-        <QrScanner />
+        <QrScanner autoStart={true} formatTimeDifference={formatTimeDifference} />
 
         <div className="mt-8 text-center">
           <Link
             to="/"
             className="inline-block text-purple-400 hover:text-purple-300 hover:underline transition-colors"
           >
-            &larr; 返回主頁
+            ← 返回主頁
           </Link>
         </div>
       </div>

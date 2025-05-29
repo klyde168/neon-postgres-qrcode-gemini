@@ -11,10 +11,34 @@ interface ScanActionData {
   savedData?: string;
 }
 
-export default function QrScanner() {
+interface QrScannerProps {
+  autoStart?: boolean;
+  formatTimeDifference: (diffInSeconds: number) => string;
+}
+
+// 解析 QR Code 時間戳
+const parseQrCodeTimestamp = (data: string): Date | null => {
+  try {
+    // 檢查是否為 ISO 8601 格式
+    if (data.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+      return new Date(data);
+    }
+    // 檢查是否為純數字時間戳（秒或毫秒）
+    if (/^\d{10,13}$/.test(data)) {
+      const timestamp = parseInt(data, 10);
+      return new Date(timestamp < 10000000000 ? timestamp * 1000 : timestamp);
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+};
+
+export default function QrScanner({ autoStart = false, formatTimeDifference }: QrScannerProps) {
   const [scannedData, setScannedData] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [isScanning, setIsScanning] = useState<boolean>(autoStart);
+  const [scanTime, setScanTime] = useState<Date | null>(null);
   const isLoopActiveRef = useRef<boolean>(false);
   const [cameraPermissionError, setCameraPermissionError] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -26,7 +50,7 @@ export default function QrScanner() {
   const animationFrameId = useRef<number | null>(null);
 
   const addDebugMessage = useCallback((message: string, isError: boolean = false) => {
-    const fullMessage = `[SCANNER ${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
+    const fullMessage = `[SCANNER ${new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' })}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
     if (isError) console.error(fullMessage);
     else console.log(fullMessage);
     setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
@@ -35,73 +59,36 @@ export default function QrScanner() {
   useEffect(() => {
     if (fetcher.data) {
       addDebugMessage(`Fetcher data received: success=${fetcher.data.success}, message=${fetcher.data.message}, error=${fetcher.data.error}, savedData=${fetcher.data.savedData ? fetcher.data.savedData.substring(0,30)+'...' : 'N/A'}`);
-      
       if (fetcher.data.success && fetcher.data.savedData) {
         addDebugMessage(`資料成功儲存 (ID: ${fetcher.data.id})。準備觸發 localStorage 更新。`);
         try {
           const currentTimestamp = Date.now().toString();
           const dataToStore = fetcher.data.savedData;
 
-          // 先獲取舊值用於事件派發
-          const oldTimestamp = localStorage.getItem('latestScannedDataTimestamp');
-          const oldData = localStorage.getItem('latestScannedDataItem');
-
-          // 設定 localStorage
           localStorage.setItem('latestScannedDataTimestamp', currentTimestamp);
           addDebugMessage(`localStorage set: latestScannedDataTimestamp = ${currentTimestamp}`);
 
           localStorage.setItem('latestScannedDataItem', dataToStore);
           addDebugMessage(`localStorage set: latestScannedDataItem = ${dataToStore.substring(0,30)}...`);
 
-          // 手動派發 storage 事件 - 確保同一頁面內的其他組件也能收到
           addDebugMessage("準備手動派發 storage 事件...");
-          
-          // 派發時間戳事件
-          const timestampEvent = new StorageEvent('storage', {
+          window.dispatchEvent(new StorageEvent('storage', {
             key: 'latestScannedDataTimestamp',
             newValue: currentTimestamp,
-            oldValue: oldTimestamp,
+            oldValue: localStorage.getItem('latestScannedDataTimestamp'),
             storageArea: localStorage,
             url: window.location.href,
-          });
-          
-          setTimeout(() => {
-            window.dispatchEvent(timestampEvent);
-            addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
-          }, 10);
+          }));
+          addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
 
-          // 派發資料事件
-          const itemEvent = new StorageEvent('storage', {
+          window.dispatchEvent(new StorageEvent('storage', {
             key: 'latestScannedDataItem',
             newValue: dataToStore,
-            oldValue: oldData,
+            oldValue: localStorage.getItem('latestScannedDataItem'),
             storageArea: localStorage,
             url: window.location.href,
-          });
-          
-          setTimeout(() => {
-            window.dispatchEvent(itemEvent);
-            addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
-          }, 20);
-
-          // 額外的觸發機制 - 直接通知其他可能的監聽器
-          setTimeout(() => {
-            addDebugMessage("嘗試觸發額外的更新通知...");
-            // 設定一個特殊的觸發標記
-            localStorage.setItem('updateTrigger', currentTimestamp);
-            
-            const triggerEvent = new StorageEvent('storage', {
-              key: 'updateTrigger',
-              newValue: currentTimestamp,
-              oldValue: null,
-              storageArea: localStorage,
-              url: window.location.href,
-            });
-            
-            window.dispatchEvent(triggerEvent);
-            addDebugMessage("額外更新通知已派發");
-          }, 50);
-
+          }));
+          addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
         } catch (e) {
           addDebugMessage(`設定 localStorage 或派發事件時發生錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
         }
@@ -114,6 +101,7 @@ export default function QrScanner() {
   const startScan = () => {
     addDebugMessage("startScan: 嘗試開始掃描...");
     setScannedData(null);
+    setScanTime(null);
     setError(null);
     setCameraPermissionError(false);
     setDebugMessages(prev => ["日誌已清除..."]);
@@ -137,11 +125,7 @@ export default function QrScanner() {
       videoRef.current.onloadedmetadata = null;
       videoRef.current.onerror = null;
       if (videoRef.current.parentNode?.contains(videoRef.current)) {
-        try { 
-          videoRef.current.load(); 
-        } catch (e) { 
-          // ignore 
-        }
+        try { videoRef.current.load(); } catch (e) { /* ignore */ }
       }
     }
     if (isScanning) {
@@ -150,6 +134,10 @@ export default function QrScanner() {
   }, [addDebugMessage, isScanning]);
 
   useEffect(() => {
+    if (autoStart && !isScanning) {
+      startScan();
+    }
+
     let effectScopedStream: MediaStream | null = null;
     if (isScanning) {
       addDebugMessage("useEffect[isScanning=true]: 開始設定相機.");
@@ -160,7 +148,7 @@ export default function QrScanner() {
           addDebugMessage("useEffect: navigator.mediaDevices.getUserMedia 不支援.", true);
           setError('您的瀏覽器不支援相機存取功能。');
           setCameraPermissionError(true);
-          setIsScanning(false); 
+          setIsScanning(false);
           return;
         }
         
@@ -247,7 +235,7 @@ export default function QrScanner() {
         } 
       }
     }
-  }, [isScanning, addDebugMessage, stopScan]);
+  }, [isScanning, addDebugMessage, stopScan, autoStart]);
 
   const tick = () => {
     if (!isLoopActiveRef.current) { 
@@ -281,6 +269,7 @@ export default function QrScanner() {
           if (code && code.data && code.data.trim() !== "") {
             addDebugMessage(`Tick #${frameCounter.current}: jsQR 找到物件! Data: "${code.data.substring(0,30)}..."`);
             setScannedData(code.data);
+            setScanTime(new Date());
             stopScan("qr_code_found");
             return;
           }
@@ -293,6 +282,17 @@ export default function QrScanner() {
     if (isLoopActiveRef.current) animationFrameId.current = requestAnimationFrame(tick);
   };
 
+  // 自動儲存邏輯
+  useEffect(() => {
+    if (scannedData && scanTime && fetcher.state === "idle") {
+      addDebugMessage("檢查是否需要自動儲存到資料庫...");
+      const formData = new FormData();
+      formData.append("scannedData", scannedData);
+      addDebugMessage("立即儲存到資料庫...");
+      fetcher.submit(formData, { method: "post", action: "/scan" });
+    }
+  }, [scannedData, scanTime, fetcher, addDebugMessage]);
+
   useEffect(() => {
     return () => {
       addDebugMessage("元件卸載，最終清理.");
@@ -304,6 +304,24 @@ export default function QrScanner() {
       }
     };
   }, [addDebugMessage]);
+
+  // 計算時間顯示資訊
+  const getTimeDisplayInfo = () => {
+    if (!scannedData || !scanTime) return null;
+
+    const now = new Date();
+    const elapsedSeconds = Math.floor((now.getTime() - scanTime.getTime()) / 1000);
+    const qrCodeTime = parseQrCodeTimestamp(scannedData);
+
+    return {
+      scanTime,
+      elapsedSeconds,
+      qrCodeTime,
+      timeDifference: qrCodeTime ? Math.floor((scanTime.getTime() - qrCodeTime.getTime()) / 1000) : null
+    };
+  };
+
+  const timeInfo = getTimeDisplayInfo();
 
   return (
     <div className="flex flex-col items-center space-y-2 w-full">
@@ -340,7 +358,7 @@ export default function QrScanner() {
             {cameraPermissionError ? (
               <p className="text-red-400">{error || '無法啟動相機。'}</p>
             ) : (
-              <p>點擊「開始掃描」</p>
+              <p>正在準備自動掃描...</p>
             )}
           </div>
         )}
@@ -352,28 +370,7 @@ export default function QrScanner() {
         <canvas ref={canvasRef} className="hidden" />
       </div>
       
-      {!isScanning && !scannedData ? (
-        <button 
-          onClick={startScan} 
-          className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-scan-line inline-block mr-2 align-middle">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
-            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
-            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
-            <path d="M7 12h10"/>
-          </svg>
-          開始掃描
-        </button>
-      ) : !isScanning && scannedData ? (
-        <button 
-          onClick={startScan} 
-          className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md"
-        >
-          重新掃描
-        </button>
-      ) : (
+      {isScanning ? (
         <button 
           onClick={() => stopScan("stop_button_click")} 
           className="bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md"
@@ -388,7 +385,14 @@ export default function QrScanner() {
           </svg>
           停止掃描
         </button>
-      )}
+      ) : scannedData ? (
+        <button 
+          onClick={startScan} 
+          className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md"
+        >
+          重新掃描
+        </button>
+      ) : null}
       
       {error && !cameraPermissionError && (
         <div className="mt-4 p-4 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg text-center w-full max-w-sm">
@@ -397,10 +401,36 @@ export default function QrScanner() {
         </div>
       )}
       
-      {scannedData && (
+      {scannedData && timeInfo && (
         <div className="mt-4 p-6 bg-slate-700 rounded-lg shadow-inner w-full max-w-sm text-center">
           <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果：</h3>
           <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md">{scannedData}</p>
+          <div className="mt-4 p-3 bg-slate-600 rounded-md text-sm text-slate-300">
+            <div className="grid grid-cols-1 gap-2">
+              <div>
+                <span className="text-slate-400">掃描時間：</span>
+                <span className="text-slate-200">{timeInfo.scanTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</span>
+              </div>
+              <div>
+                <span className="text-slate-400">掃描後經過：</span>
+                <span className="text-slate-200">{formatTimeDifference(timeInfo.elapsedSeconds)}</span>
+              </div>
+              {timeInfo.qrCodeTime && timeInfo.timeDifference !== null && (
+                <>
+                  <div>
+                    <span className="text-slate-400">QR Code 時間：</span>
+                    <span className="text-slate-200">{timeInfo.qrCodeTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">時間差距：</span>
+                    <span className="text-slate-200">
+                      {timeInfo.timeDifference > 0 ? '+' : ''}{formatTimeDifference(timeInfo.timeDifference)}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
           <div className="mt-4 flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-2">
             <button 
               onClick={() => { 
