@@ -10,6 +10,11 @@ interface ScanActionData {
   id?: number;
   savedData?: string;
   timeDifference?: number;
+  scanTime?: string;
+  currentTime?: string;
+  savedTime?: string;
+  qrTimestamp?: string | null;
+  qrTimeDifference?: number | null;
 }
 
 export default function QrScanner() {
@@ -72,8 +77,13 @@ export default function QrScanner() {
     if (fetcher.data) {
       addDebugMessage(`Fetcher data received: success=${fetcher.data.success}, message=${fetcher.data.message}, error=${fetcher.data.error}, timeDifference=${fetcher.data.timeDifference}`);
       
+      if (fetcher.data.qrTimestamp) {
+        addDebugMessage(`QR Code 內容時間: ${fetcher.data.qrTimestamp}, 與掃描時間差距: ${fetcher.data.qrTimeDifference} 秒`);
+      }
+      
       if (fetcher.data.success && fetcher.data.savedData) {
         addDebugMessage(`資料成功儲存 (ID: ${fetcher.data.id})。準備觸發 localStorage 更新。`);
+        addDebugMessage(`掃描時間: ${fetcher.data.scanTime}, 儲存時間: ${fetcher.data.savedTime}`);
         try {
           const currentTimestamp = Date.now().toString();
           const dataToStore = fetcher.data.savedData;
@@ -390,7 +400,45 @@ export default function QrScanner() {
             ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300' 
             : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'
         }`}>
-          <p>{fetcher.data.message || fetcher.data.error}</p>
+          <p className="font-semibold mb-2">{fetcher.data.message || fetcher.data.error}</p>
+          
+          {/* 顯示詳細時間資訊 */}
+          {(fetcher.data.scanTime || fetcher.data.currentTime || fetcher.data.savedTime || fetcher.data.qrTimestamp) && (
+            <div className="text-xs space-y-1 mt-3 border-t border-opacity-30 pt-2">
+              {fetcher.data.qrTimestamp && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">QR Code 時間:</span>
+                  <span className="font-mono">{fetcher.data.qrTimestamp}</span>
+                </div>
+              )}
+              {fetcher.data.scanTime && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">掃描時間:</span>
+                  <span className="font-mono">{fetcher.data.scanTime}</span>
+                </div>
+              )}
+              {fetcher.data.savedTime && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">儲存時間:</span>
+                  <span className="font-mono">{fetcher.data.savedTime}</span>
+                </div>
+              )}
+              {fetcher.data.qrTimeDifference !== null && fetcher.data.qrTimeDifference !== undefined && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">時間差距:</span>
+                  <span className={`font-mono ${
+                    Math.abs(fetcher.data.qrTimeDifference) <= 5 
+                      ? 'text-green-300' 
+                      : Math.abs(fetcher.data.qrTimeDifference) <= 30 
+                        ? 'text-yellow-300' 
+                        : 'text-red-300'
+                  }`}>
+                    {fetcher.data.qrTimeDifference > 0 ? '+' : ''}{fetcher.data.qrTimeDifference} 秒
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
