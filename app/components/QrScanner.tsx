@@ -28,7 +28,11 @@ const parseQrCodeTimestamp = (data: string): Date | null => {
       const timestamp = parseInt(data, 10);
       return new Date(timestamp < 10000000000 ? timestamp * 1000 : timestamp);
     }
-    return null;
+    // 檢查是否為 UUID 格式（簡單檢查）
+    if (data.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      return null; // UUID 不含時間資訊
+    }
+    return null; // 其他格式
   } catch (error) {
     return null;
   }
@@ -401,7 +405,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
         </div>
       )}
       
-      {scannedData && timeInfo && (
+      {scannedData && (
         <div className="mt-4 p-6 bg-slate-700 rounded-lg shadow-inner w-full max-w-sm text-center">
           <h3 className="text-xl font-semibold text-slate-200 mb-3">掃描結果：</h3>
           <p className="text-lg text-purple-300 break-all bg-slate-600 p-3 rounded-md">{scannedData}</p>
@@ -409,25 +413,25 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
             <div className="grid grid-cols-1 gap-2">
               <div>
                 <span className="text-slate-400">掃描時間：</span>
-                <span className="text-slate-200">{timeInfo.scanTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</span>
+                <span className="text-slate-200">{timeInfo?.scanTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</span>
               </div>
               <div>
                 <span className="text-slate-400">掃描後經過：</span>
-                <span className="text-slate-200">{formatTimeDifference(timeInfo.elapsedSeconds)}</span>
+                <span className="text-slate-200">{timeInfo ? formatTimeDifference(timeInfo.elapsedSeconds) : 'N/A'}</span>
               </div>
-              {timeInfo.qrCodeTime && timeInfo.timeDifference !== null && (
-                <>
-                  <div>
-                    <span className="text-slate-400">QR Code 時間：</span>
-                    <span className="text-slate-200">{timeInfo.qrCodeTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">時間差距：</span>
-                    <span className="text-slate-200">
-                      {timeInfo.timeDifference > 0 ? '+' : ''}{formatTimeDifference(timeInfo.timeDifference)}
-                    </span>
-                  </div>
-                </>
+              <div>
+                <span className="text-slate-400">QR Code 時間：</span>
+                <span className="text-slate-200">
+                  {timeInfo?.qrCodeTime ? timeInfo.qrCodeTime.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '無法解析時間'}
+                </span>
+              </div>
+              {timeInfo?.qrCodeTime && timeInfo.timeDifference !== null && (
+                <div>
+                  <span className="text-slate-400">時間差距：</span>
+                  <span className="text-slate-200">
+                    {timeInfo.timeDifference > 0 ? '+' : ''}{formatTimeDifference(timeInfo.timeDifference)}
+                  </span>
+                </div>
               )}
             </div>
           </div>
