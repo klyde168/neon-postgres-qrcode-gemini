@@ -1,4 +1,3 @@
-
 // app/components/QrScanner.tsx
 import { useState, useRef, useEffect, useCallback } from 'react';
 import jsQR, { QRCode } from 'jsqr';
@@ -94,7 +93,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
           addDebugMessage(`設定 localStorage 或派發事件時發生錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
         }
       } else if (fetcher.data && !fetcher.data.success && fetcher.data.error) {
-        addDebugMessage(`儲存資料失敗: ${fetcher.data.error}`, true);
+        addDebugMessage(`儲存失敗: ${fetcher.data.error}`, true);
         setValidationResult({ message: `儲存失敗: ${fetcher.data.error}`, isValid: false });
       }
     }
@@ -107,7 +106,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
     setError(null);
     setCameraPermissionError(false);
     setValidationResult(null);
-    setDebugMessages(prev => ["日誌已清除..."]);
+    setDebugMessages(["日誌已清掃..."]);
     frameCounter.current = 0;
     setIsScanning(true);
   };
@@ -201,7 +200,7 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
           addDebugMessage(`useEffect: 相機存取錯誤: ${err instanceof Error ? err.message : String(err)}`, true); 
           setError('無法存取相機。請檢查相機權限設定。'); 
           setCameraPermissionError(true); 
-          setIsScanning(false); 
+          setIsScanning(false);
         }
       };
       
@@ -411,6 +410,16 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
           重新掃描
         </button>
       ) : null}
+
+      {validationResult && (
+        <div className={`mt-2 p-4 rounded-lg text-center w-full max-w-sm ${
+          validationResult.isValid
+            ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300'
+            : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'
+        }`}>
+          <p>{validationResult.message}</p>
+        </div>
+      )}
       
       {error && !cameraPermissionError && (
         <div className="mt-4 p-4 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg text-center w-full max-w-sm">
@@ -449,15 +458,6 @@ export default function QrScanner({ autoStart = false, formatTimeDifference }: Q
               )}
             </div>
           </div>
-          {validationResult && (
-            <div className={`mt-4 p-4 rounded-lg text-center w-full max-w-sm ${
-              validationResult.isValid
-                ? 'bg-green-700 bg-opacity-50 border border-green-500 text-green-300'
-                : 'bg-red-700 bg-opacity-50 border border-red-500 text-red-300'
-            }`}>
-              <p>{validationResult.message}</p>
-            </div>
-          )}
           <div className="mt-4 flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-2">
             <button 
               onClick={() => { 
