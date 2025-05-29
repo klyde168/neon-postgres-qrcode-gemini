@@ -1,10 +1,10 @@
+
 // app/routes/generate.tsx
 import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { Link, useActionData, json, useSubmit, useLoaderData, useRevalidator } from "@remix-run/react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
-import { pool } from "db.server";
 
 // Helper for client-side logging to appear in the UI debug log
 const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<string[]>>) => {
@@ -19,7 +19,7 @@ const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<strin
 export const meta: MetaFunction = () => {
   return [
     { title: "產生 QR Code" },
-    { name: "description", content: "顯示最新掃描的 QR Code 或產生新的 UUID QR Code" },
+    { name: "description", content: "每 2 秒自動產生新的 UUID QR Code" },
   ];
 };
 
@@ -34,81 +34,34 @@ type QrCodeResponse = {
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
   const loaderExecutionId = randomUUID().substring(0, 8);
   console.log(`[LOADER ${loaderExecutionId}] Initiated.`);
-  let textToEncode: string | null = null;
-  let errorMsg: string | null = null;
-  let intent = "loader-fetch-latest";
+  const textToEncode = randomUUID();
   const currentTimestamp = Date.now();
 
-  try {
-    // 檢查資料庫連接
-    if (!pool) {
-      throw new Error("Database pool not initialized");
-    }
+  console.log(`[LOADER ${loaderExecutionId}] Generated UUID: "${textToEncode}"`);
 
-    const client = await pool.connect();
-    console.log(`[LOADER ${loaderExecutionId}] Database client connected.`);
-    
-    try {
-      // 測試資料庫連接
-      await client.query('SELECT NOW()');
-      console.log(`[LOADER ${loaderExecutionId}] Database connection test successful.`);
-
-      // 查詢最新掃描資料
-      const latestScanQuery = 'SELECT data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
-      const res = await client.query(latestScanQuery);
-      
-      if (res.rows.length > 0 && res.rows[0].data) {
-        textToEncode = res.rows[0].data;
-        console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data: "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
-      } else {
-        textToEncode = randomUUID();
-        intent = "loader-initial-uuid";
-        console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated UUID: "${textToEncode}"`);
-      }
-    } finally {
-      client.release();
-      console.log(`[LOADER ${loaderExecutionId}] Database client released.`);
-    }
-  } catch (dbError: any) {
-    console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
-    console.error(`[LOADER ${loaderExecutionId}] Database error stack:`, dbError.stack);
-    errorMsg = `讀取最新掃描資料時發生錯誤: ${dbError.message}`;
-    textToEncode = randomUUID();
-    intent = "loader-db-error-fallback-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
-  }
-
-  if (!textToEncode) {
-    textToEncode = randomUUID();
-    intent = "loader-final-fallback-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] Final fallback UUID: "${textToEncode}"`);
-  }
-
-  console.log(`[LOADER ${loaderExecutionId}] Text to encode: "${textToEncode}"`);
-  
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-      errorCorrectionLevel: "H", 
-      width: 256, 
+      errorCorrectionLevel: "H",
+      width: 256,
       margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[LOADER ${loaderExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ 
-      qrCodeDataUrl, 
-      error: errorMsg, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+    return json({
+      qrCodeDataUrl,
+      error: null,
+      sourceText: textToEncode,
+      intent: "loader-generate-uuid",
+      timestamp: currentTimestamp
     } as QrCodeResponse);
   } catch (qrErr: any) {
     console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
-    return json({ 
-      error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, 
-      qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+    return json({
+      error: `產生 QR Code 失敗: ${qrErr.message || '未知錯誤'}`,
+      qrCodeDataUrl: null,
+      sourceText: textToEncode,
+      intent: "loader-generate-uuid",
+      timestamp: currentTimestamp
     } as QrCodeResponse, { status: 500 });
   }
 }
@@ -128,12 +81,12 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
   } else {
     console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
-    return json({ 
-      error: "無效的操作。", 
-      qrCodeDataUrl: null, 
-      sourceText: null, 
-      intent, 
-      timestamp: currentTimestamp 
+    return json({
+      error: "無效的操作。",
+      qrCodeDataUrl: null,
+      sourceText: null,
+      intent,
+      timestamp: currentTimestamp
     } as QrCodeResponse, { status: 400 });
   }
 
@@ -149,21 +102,21 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[ACTION ${actionExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ 
-      qrCodeDataUrl, 
-      error: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+    return json({
+      qrCodeDataUrl,
+      error: null,
+      sourceText: textToEncode,
+      intent,
+      timestamp: currentTimestamp
     } as QrCodeResponse);
   } catch (err: any) {
     console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
-    return json({ 
-      error: "產生 QR Code 時發生錯誤。", 
-      qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+    return json({
+      error: "產生 QR Code 時發生錯誤。",
+      qrCodeDataUrl: null,
+      sourceText: textToEncode,
+      intent,
+      timestamp: currentTimestamp
     } as QrCodeResponse, { status: 500 });
   }
 }
@@ -191,7 +144,6 @@ export default function GeneratePage() {
   useEffect(() => {
     if (actionData) {
       addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}..."`);
-      // 總是使用 actionData 如果它存在且比當前資料新
       if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
         addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
@@ -243,10 +195,7 @@ export default function GeneratePage() {
             QR Code 產生器
           </h1>
           <p className="text-slate-400">
-            {currentDisplayData?.intent?.includes("uuid") 
-              ? "顯示隨機產生的 UUID QR Code。新的掃描資料會自動更新顯示。"
-              : "顯示最新掃描的 QR Code 資料。"
-            }
+            每 2 秒自動產生新的 UUID QR Code。
           </p>
         </header>
 
@@ -345,7 +294,7 @@ export default function GeneratePage() {
             to="/"
             className="inline-block text-sky-400 hover:text-sky-300 hover:underline transition-colors"
           >
-            &larr; 返回主頁
+            ← 返回主頁
           </Link>
         </div>
       </div>
