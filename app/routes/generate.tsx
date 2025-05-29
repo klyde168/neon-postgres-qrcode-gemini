@@ -40,11 +40,23 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   const currentTimestamp = Date.now();
 
   try {
+    // 檢查資料庫連接
+    if (!pool) {
+      throw new Error("Database pool not initialized");
+    }
+
     const client = await pool.connect();
     console.log(`[LOADER ${loaderExecutionId}] Database client connected.`);
+    
     try {
+      // 測試資料庫連接
+      await client.query('SELECT NOW()');
+      console.log(`[LOADER ${loaderExecutionId}] Database connection test successful.`);
+
+      // 查詢最新掃描資料
       const latestScanQuery = 'SELECT data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
       const res = await client.query(latestScanQuery);
+      
       if (res.rows.length > 0 && res.rows[0].data) {
         textToEncode = res.rows[0].data;
         console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data: "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
@@ -59,7 +71,8 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
     }
   } catch (dbError: any) {
     console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
-    errorMsg = "讀取最新掃描資料時發生錯誤。";
+    console.error(`[LOADER ${loaderExecutionId}] Database error stack:`, dbError.stack);
+    errorMsg = `讀取最新掃描資料時發生錯誤: ${dbError.message}`;
     textToEncode = randomUUID();
     intent = "loader-db-error-fallback-uuid";
     console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
@@ -72,16 +85,31 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   }
 
   console.log(`[LOADER ${loaderExecutionId}] Text to encode: "${textToEncode}"`);
+  
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-      errorCorrectionLevel: "H", width: 256, margin: 2,
+      errorCorrectionLevel: "H", 
+      width: 256, 
+      margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[LOADER ${loaderExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ qrCodeDataUrl, error: errorMsg, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
+    return json({ 
+      qrCodeDataUrl, 
+      error: errorMsg, 
+      sourceText: textToEncode, 
+      intent, 
+      timestamp: currentTimestamp 
+    } as QrCodeResponse);
   } catch (qrErr: any) {
     console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
-    return json({ error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
+    return json({ 
+      error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, 
+      qrCodeDataUrl: null, 
+      sourceText: textToEncode, 
+      intent, 
+      timestamp: currentTimestamp 
+    } as QrCodeResponse, { status: 500 });
   }
 }
 
@@ -100,7 +128,13 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
   } else {
     console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
-    return json({ error: "無效的操作。", qrCodeDataUrl: null, sourceText: null, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 400 });
+    return json({ 
+      error: "無效的操作。", 
+      qrCodeDataUrl: null, 
+      sourceText: null, 
+      intent, 
+      timestamp: currentTimestamp 
+    } as QrCodeResponse, { status: 400 });
   }
 
   const sizeValue = formData.get("size") || "256";
@@ -115,10 +149,22 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[ACTION ${actionExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
+    return json({ 
+      qrCodeDataUrl, 
+      error: null, 
+      sourceText: textToEncode, 
+      intent, 
+      timestamp: currentTimestamp 
+    } as QrCodeResponse);
   } catch (err: any) {
     console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
-    return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
+    return json({ 
+      error: "產生 QR Code 時發生錯誤。", 
+      qrCodeDataUrl: null, 
+      sourceText: textToEncode, 
+      intent, 
+      timestamp: currentTimestamp 
+    } as QrCodeResponse, { status: 500 });
   }
 }
 
@@ -134,16 +180,18 @@ export default function GeneratePage() {
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
-  const autoUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // 處理初始 loader 資料
   useEffect(() => {
     addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}..."`);
     setCurrentDisplayData(initialLoaderData);
   }, [initialLoaderData, addUiDebugMessage]);
 
+  // 處理 action 資料
   useEffect(() => {
     if (actionData) {
       addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}..."`);
+      // 總是使用 actionData 如果它存在且比當前資料新
       if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
         addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
@@ -153,73 +201,60 @@ export default function GeneratePage() {
     }
   }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
 
-  // 新增：2秒自動更新機制
-  useEffect(() => {
-    addUiDebugMessage("設置 2 秒自動更新計時器");
-    
-    // 清除現有的計時器
-    if (autoUpdateIntervalRef.current) {
-      clearInterval(autoUpdateIntervalRef.current);
-    }
-    
-    // 設置新的計時器
-    autoUpdateIntervalRef.current = setInterval(() => {
-      addUiDebugMessage("2 秒計時器觸發，重新載入資料");
-      revalidator.revalidate();
-    }, 2000);
-
-    // 清理函數
-    return () => {
-      if (autoUpdateIntervalRef.current) {
-        addUiDebugMessage("清除 2 秒自動更新計時器");
-        clearInterval(autoUpdateIntervalRef.current);
-        autoUpdateIntervalRef.current = null;
-      }
-    };
-  }, [revalidator, addUiDebugMessage]);
-
-  // localStorage 同步機制（保持原有功能）
+  // 監聽 localStorage 變化並重新驗證
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
-      addUiDebugMessage(`Storage event: key=${event.key}, newValue=${event.newValue?.substring(0,50)}, oldValue=${event.oldValue?.substring(0,50)}`);
+      addUiDebugMessage(`Storage event detected: key=${event.key}, newValue=${event.newValue?.substring(0,30)}...`);
+      
       if (event.key === 'latestScannedDataTimestamp' || event.key === 'latestScannedDataItem') {
-        const newTimestamp = event.storageArea?.getItem('latestScannedDataTimestamp');
+        const newTimestamp = localStorage.getItem('latestScannedDataTimestamp');
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
-        addUiDebugMessage(`Relevant storage change. NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
+        
+        addUiDebugMessage(`Storage change - NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
 
         if (newTimestamp && newTimestamp !== lastRevalidated) {
-          addUiDebugMessage("Revalidating loader data due to new storage event...");
+          addUiDebugMessage("Storage event triggered revalidation...");
           revalidator.revalidate();
           localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
         } else {
-          addUiDebugMessage("Storage event for same timestamp or no new timestamp, no revalidation.");
+          addUiDebugMessage("Storage event ignored - same timestamp or no new timestamp");
         }
       }
     };
 
+    // 添加事件監聽器
     window.addEventListener('storage', handleStorageChange);
     addUiDebugMessage("Storage event listener added.");
 
-    // Initial check on mount
-    const latestStoredTimestamp = localStorage.getItem('latestScannedDataTimestamp');
-    if (latestStoredTimestamp) {
-      addUiDebugMessage(`Initial mount check - localStorage latestScannedDataTimestamp: ${latestStoredTimestamp}, loaderData ts: ${initialLoaderData.timestamp}, intent: ${initialLoaderData.intent}`);
-      if (initialLoaderData.intent !== "loader-fetch-latest" || (initialLoaderData.timestamp && parseInt(latestStoredTimestamp, 10) > initialLoaderData.timestamp)) {
-        if (latestStoredTimestamp !== localStorage.getItem('lastRevalidatedTimestamp')) {
-          addUiDebugMessage("Found newer data in localStorage on initial mount, revalidating.");
-          revalidator.revalidate();
-          localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
-        } else {
-          addUiDebugMessage("Newer data in localStorage on mount, but already revalidated for this timestamp.");
+    // 初始檢查 - 看看是否有新的掃描資料
+    const checkInitialStorage = () => {
+      const latestStoredTimestamp = localStorage.getItem('latestScannedDataTimestamp');
+      if (latestStoredTimestamp) {
+        const timestampNum = parseInt(latestStoredTimestamp, 10);
+        const loaderTimestamp = initialLoaderData.timestamp || 0;
+        
+        addUiDebugMessage(`Initial check - localStorage ts: ${timestampNum}, loader ts: ${loaderTimestamp}`);
+        
+        if (timestampNum > loaderTimestamp) {
+          const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
+          if (latestStoredTimestamp !== lastRevalidated) {
+            addUiDebugMessage("Found newer data in localStorage on mount, revalidating...");
+            revalidator.revalidate();
+            localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
+          }
         }
       }
-    }
+    };
+
+    // 延遲執行初始檢查，確保元件完全載入
+    const timeoutId = setTimeout(checkInitialStorage, 100);
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      clearTimeout(timeoutId);
       addUiDebugMessage("Storage event listener removed.");
     };
-  }, [revalidator, initialLoaderData.timestamp, initialLoaderData.intent, addUiDebugMessage]);
+  }, [revalidator, initialLoaderData.timestamp, addUiDebugMessage]);
 
   const handleGenerateNewUuid = () => {
     addUiDebugMessage("Button click: handleGenerateNewUuid");
@@ -236,9 +271,11 @@ export default function GeneratePage() {
         {/* UI Debug Log Display */}
         {debugMessages.length > 0 && (
           <div className="w-full p-2 mb-4 bg-slate-950 border border-slate-700 text-slate-400 text-xs rounded-md shadow-inner max-h-32 overflow-y-auto font-mono">
-            <p className="font-semibold text-slate-300 mb-1 border-b border-slate-700 pb-1">客戶端日誌 (Client Log):</p>
+            <p className="font-semibold text-slate-300 mb-1 border-b border-slate-700 pb-1">客戶端日誌:</p>
             {debugMessages.map((msg, index) => (
-              <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">{msg.substring(msg.indexOf(']') + 2)}</div>
+              <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">
+                {msg.substring(msg.indexOf(']') + 2)}
+              </div>
             ))}
           </div>
         )}
@@ -248,13 +285,9 @@ export default function GeneratePage() {
             QR Code 產生器
           </h1>
           <p className="text-slate-400">
-            {currentDisplayData?.intent === "loader-initial-uuid" || currentDisplayData?.intent?.includes("fallback-uuid")
-              ? "初始顯示 UUID QR Code。最新掃描資料將每 2 秒自動更新於此。"
-              : currentDisplayData?.intent === "loader-fetch-latest"
-              ? "顯示最新掃描的 QR Code（每 2 秒自動更新）。"
-              : currentDisplayData?.intent === "generate-uuid-via-action"
-              ? "顯示新產生的 UUID QR Code。"
-              : "掃描資料將每 2 秒自動更新，或點擊按鈕產生新的 UUID QR Code。"
+            {currentDisplayData?.intent?.includes("uuid") 
+              ? "顯示隨機產生的 UUID QR Code。新的掃描資料會自動更新顯示。"
+              : "顯示最新掃描的 QR Code 資料。"
             }
           </p>
         </header>
@@ -321,7 +354,9 @@ export default function GeneratePage() {
           <div className="mt-8 text-center p-6 bg-slate-700 rounded-lg shadow-inner">
             <h3 className="text-xl font-semibold text-slate-100 mb-2">目前 QR Code：</h3>
             {currentDisplayData?.sourceText && (
-              <p className="text-xs text-slate-400 mb-3 break-all max-w-xs mx-auto">內容: {currentDisplayData.sourceText}</p>
+              <p className="text-xs text-slate-400 mb-3 break-all max-w-xs mx-auto">
+                內容: {currentDisplayData.sourceText}
+              </p>
             )}
             <div className="flex justify-center items-center bg-white p-2 rounded-md inline-block shadow-lg">
               <img
@@ -329,6 +364,7 @@ export default function GeneratePage() {
                 src={currentDisplayData.qrCodeDataUrl}
                 alt="產生的 QR Code"
                 className="mx-auto"
+                key={currentDisplayData.timestamp} // 強制重新渲染
               />
             </div>
             <a
