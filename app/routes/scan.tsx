@@ -1,4 +1,4 @@
-// app/routes/scan.tsx (簡化版本，移除 WebSocket)
+// app/routes/scan.tsx
 import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
 import { Link, json } from "@remix-run/react";
 import QrScanner from "~/components/QrScanner";
@@ -14,11 +14,29 @@ export const meta: MetaFunction = () => {
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const scannedDataValue = formData.get("scannedData");
+  const scanTimestampValue = formData.get("scanTimestamp");
 
   if (typeof scannedDataValue !== "string" || scannedDataValue.trim() === "") {
     return json({ success: false, error: "掃描到的資料是空的或無效的。" }, { status: 400 });
   }
+
+  if (typeof scanTimestampValue !== "string" || !scanTimestampValue) {
+    return json({ success: false, error: "掃描時間戳記無效。" }, { status: 400 });
+  }
+
   const scannedData = scannedDataValue;
+  const scanTimestamp = parseInt(scanTimestampValue, 10);
+  const currentTimestamp = Date.now();
+  const timeDifference = Math.floor((currentTimestamp - scanTimestamp) / 1000); // 時間差（秒）
+
+  // 檢查時間差是否在5秒內
+  if (timeDifference > 5) {
+    return json({ 
+      success: false, 
+      error: `掃描資料已過期（${timeDifference} 秒前），請重新掃描。`,
+      timeDifference 
+    }, { status: 400 });
+  }
 
   try {
     const client = await pool.connect();
@@ -30,7 +48,8 @@ export async function action({ request }: ActionFunctionArgs) {
         success: true,
         id: res.rows[0].id,
         savedData: res.rows[0].data,
-        message: "資料已成功儲存到資料庫！"
+        message: `資料已成功儲存到資料庫！（掃描後 ${timeDifference} 秒）`,
+        timeDifference
       });
     } finally {
       client.release();
@@ -50,7 +69,7 @@ export default function ScanPage() {
             QR Code 掃描器
           </h1>
           <p className="text-slate-400">
-            將 QR Code 對準相機鏡頭以進行掃描。
+            將 QR Code 對準相機鏡頭以進行掃描。掃描後5秒內會自動儲存到資料庫。
           </p>
         </header>
 
@@ -65,7 +84,7 @@ export default function ScanPage() {
           </Link>
         </div>
       </div>
-      <footer className="mt-12 text-center text-slate-500 text-sm">
+       <footer className="mt-12 text-center text-slate-500 text-sm">
         <p>
           使用{" "}
           <a href="https://remix.run" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">
