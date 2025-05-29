@@ -201,25 +201,73 @@ export default function GeneratePage() {
     }
   }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
 
-  // 監聽 localStorage 變化並重新驗證
+  // 監聽 localStorage 變化並設定自動更新
   useEffect(() => {
+    let autoUpdateTimer: NodeJS.Timeout | null = null;
+
     const handleStorageChange = (event: StorageEvent) => {
       addUiDebugMessage(`Storage event detected: key=${event.key}, newValue=${event.newValue?.substring(0,30)}...`);
       
-      if (event.key === 'latestScannedDataTimestamp' || event.key === 'latestScannedDataItem') {
+      if (event.key === 'latestScannedDataTimestamp' || 
+          event.key === 'latestScannedDataItem' || 
+          event.key === 'updateTrigger') {
         const newTimestamp = localStorage.getItem('latestScannedDataTimestamp');
         const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
         
         addUiDebugMessage(`Storage change - NewTS: ${newTimestamp}, LastRevalidatedTS: ${lastRevalidated}`);
 
+        // 清除現有的自動更新計時器
+        if (autoUpdateTimer) {
+          clearTimeout(autoUpdateTimer);
+          addUiDebugMessage("清除現有自動更新計時器");
+        }
+
         if (newTimestamp && newTimestamp !== lastRevalidated) {
-          addUiDebugMessage("Storage event triggered revalidation...");
+          addUiDebugMessage("Storage event triggered immediate revalidation...");
           revalidator.revalidate();
           localStorage.setItem('lastRevalidatedTimestamp', newTimestamp);
         } else {
           addUiDebugMessage("Storage event ignored - same timestamp or no new timestamp");
         }
+        
+        // 重新開始自動更新循環
+        setupAutoUpdate();
       }
+    };
+
+    // 設定 2 秒自動更新檢查
+    const setupAutoUpdate = () => {
+      if (autoUpdateTimer) {
+        clearTimeout(autoUpdateTimer);
+      }
+      
+      autoUpdateTimer = setTimeout(() => {
+        addUiDebugMessage("2秒自動更新檢查觸發");
+        const latestStoredTimestamp = localStorage.getItem('latestScannedDataTimestamp');
+        const lastRevalidated = localStorage.getItem('lastRevalidatedTimestamp');
+        
+        if (latestStoredTimestamp && latestStoredTimestamp !== lastRevalidated) {
+          const timestampNum = parseInt(latestStoredTimestamp, 10);
+          const currentDisplayTimestamp = currentDisplayData.timestamp || 0;
+          
+          addUiDebugMessage(`自動更新檢查 - localStorage ts: ${timestampNum}, current display ts: ${currentDisplayTimestamp}`);
+          
+          if (timestampNum > currentDisplayTimestamp) {
+            addUiDebugMessage("自動更新觸發 revalidation");
+            revalidator.revalidate();
+            localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
+          } else {
+            addUiDebugMessage("自動更新檢查 - 無需更新");
+          }
+        } else {
+          addUiDebugMessage("自動更新檢查 - 無新資料或已處理");
+        }
+        
+        // 遞迴設定下一次自動更新
+        setupAutoUpdate();
+      }, 2000);
+      
+      addUiDebugMessage("設置 2 秒自動更新計時器");
     };
 
     // 添加事件監聽器
@@ -247,14 +295,21 @@ export default function GeneratePage() {
     };
 
     // 延遲執行初始檢查，確保元件完全載入
-    const timeoutId = setTimeout(checkInitialStorage, 100);
+    const timeoutId = setTimeout(() => {
+      checkInitialStorage();
+      setupAutoUpdate(); // 開始自動更新循環
+    }, 100);
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      if (autoUpdateTimer) {
+        clearTimeout(autoUpdateTimer);
+        addUiDebugMessage("清除 2 秒自動更新計時器");
+      }
       clearTimeout(timeoutId);
       addUiDebugMessage("Storage event listener removed.");
     };
-  }, [revalidator, initialLoaderData.timestamp, addUiDebugMessage]);
+  }, [revalidator, initialLoaderData.timestamp, currentDisplayData.timestamp, addUiDebugMessage]);
 
   const handleGenerateNewUuid = () => {
     addUiDebugMessage("Button click: handleGenerateNewUuid");

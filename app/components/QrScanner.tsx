@@ -42,6 +42,10 @@ export default function QrScanner() {
           const currentTimestamp = Date.now().toString();
           const dataToStore = fetcher.data.savedData;
 
+          // 先獲取舊值用於事件派發
+          const oldTimestamp = localStorage.getItem('latestScannedDataTimestamp');
+          const oldData = localStorage.getItem('latestScannedDataItem');
+
           // 設定 localStorage
           localStorage.setItem('latestScannedDataTimestamp', currentTimestamp);
           addDebugMessage(`localStorage set: latestScannedDataTimestamp = ${currentTimestamp}`);
@@ -49,32 +53,54 @@ export default function QrScanner() {
           localStorage.setItem('latestScannedDataItem', dataToStore);
           addDebugMessage(`localStorage set: latestScannedDataItem = ${dataToStore.substring(0,30)}...`);
 
-          // 手動派發 storage 事件
+          // 手動派發 storage 事件 - 確保同一頁面內的其他組件也能收到
           addDebugMessage("準備手動派發 storage 事件...");
           
-          // 為 latestScannedDataTimestamp 派發事件
+          // 派發時間戳事件
           const timestampEvent = new StorageEvent('storage', {
             key: 'latestScannedDataTimestamp',
             newValue: currentTimestamp,
-            oldValue: null, // 簡化處理
+            oldValue: oldTimestamp,
             storageArea: localStorage,
             url: window.location.href,
           });
           
-          window.dispatchEvent(timestampEvent);
-          addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
+          setTimeout(() => {
+            window.dispatchEvent(timestampEvent);
+            addDebugMessage("Storage 事件已派發 for latestScannedDataTimestamp.");
+          }, 10);
 
-          // 為 latestScannedDataItem 派發事件
+          // 派發資料事件
           const itemEvent = new StorageEvent('storage', {
             key: 'latestScannedDataItem',
             newValue: dataToStore,
-            oldValue: null, // 簡化處理
+            oldValue: oldData,
             storageArea: localStorage,
             url: window.location.href,
           });
           
-          window.dispatchEvent(itemEvent);
-          addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
+          setTimeout(() => {
+            window.dispatchEvent(itemEvent);
+            addDebugMessage("Storage 事件已派發 for latestScannedDataItem.");
+          }, 20);
+
+          // 額外的觸發機制 - 直接通知其他可能的監聽器
+          setTimeout(() => {
+            addDebugMessage("嘗試觸發額外的更新通知...");
+            // 設定一個特殊的觸發標記
+            localStorage.setItem('updateTrigger', currentTimestamp);
+            
+            const triggerEvent = new StorageEvent('storage', {
+              key: 'updateTrigger',
+              newValue: currentTimestamp,
+              oldValue: null,
+              storageArea: localStorage,
+              url: window.location.href,
+            });
+            
+            window.dispatchEvent(triggerEvent);
+            addDebugMessage("額外更新通知已派發");
+          }, 50);
 
         } catch (e) {
           addDebugMessage(`設定 localStorage 或派發事件時發生錯誤: ${e instanceof Error ? e.message : String(e)}`, true);
