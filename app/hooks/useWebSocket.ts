@@ -1,163 +1,131 @@
 // app/hooks/useWebSocket.ts
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
-interface QRCodeData {
-  qrCodeDataUrl: string;
-  sourceText: string;
-  timestamp: number;
+type WebSocketMessage = {
+  type: string;
+  data?: any;
+  timestamp?: number;
+  [key: string]: any;
+};
+
+type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+interface UseWebSocketReturn {
+  status: WebSocketStatus;
+  sendMessage: (message: WebSocketMessage) => void;
+  lastMessage: WebSocketMessage | null;
+  connect: () => void;
+  disconnect: () => void;
 }
 
-interface QRCodeMessage {
-  type: 'generate_uuid' | 'qr_code_generated' | 'error' | 'new_scan';
-  data?: QRCodeData;
-  error?: string;
-  options?: {
-    size?: string;
-    errorCorrection?: string;
-  };
-  scanData?: string;
-}
-
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
-
-export function useWebSocket(url: string) {
-  const [qrData, setQrData] = useState<QRCodeData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
+export function useWebSocket(url?: string): UseWebSocketReturn {
+  const [status, setStatus] = useState<WebSocketStatus>('disconnected');
+  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const maxReconnectAttempts = 5;
+  const reconnectDelay = 3000;
+
+  const wsUrl = url || `ws://${typeof window !== 'undefined' ? window.location.host : 'localhost'}/ws`;
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return; // 已經連接
+      return;
     }
 
-    setConnectionStatus('connecting');
-    
+    console.log('[WebSocket Hook] Attempting to connect to:', wsUrl);
+    setStatus('connecting');
+
     try {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
-        setIsConnected(true);
-        setConnectionStatus('connected');
-        setError(null);
-        
-        // 清除重連定時器
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-        }
+        console.log('[WebSocket Hook] Connected successfully');
+        setStatus('connected');
+        reconnectAttemptsRef.current = 0;
       };
 
       ws.onmessage = (event) => {
         try {
-          const message: QRCodeMessage = JSON.parse(event.data);
-          console.log('WebSocket message received:', message);
-          
-          switch (message.type) {
-            case 'qr_code_generated':
-              if (message.data) {
-                setQrData(message.data);
-                setError(null);
-              }
-              break;
-            case 'error':
-              setError(message.error || '未知錯誤');
-              break;
-            default:
-              console.log('Unknown message type:', message.type);
-          }
-        } catch (err) {
-          console.error('Message parsing error:', err);
-          setError('訊息解析錯誤');
+          const message = JSON.parse(event.data);
+          console.log('[WebSocket Hook] Received message:', message);
+          setLastMessage(message);
+        } catch (error) {
+          console.error('[WebSocket Hook] Failed to parse message:', error);
         }
       };
 
       ws.onclose = (event) => {
-        console.log('WebSocket disconnected', event.code, event.reason);
-        setIsConnected(false);
-        setConnectionStatus('disconnected');
-        
-        // 自動重連 (除非是正常關閉)
-        if (event.code !== 1000) {
+        console.log('[WebSocket Hook] Connection closed:', event.code, event.reason);
+        setStatus('disconnected');
+        wsRef.current = null;
+
+        // Auto-reconnect if not manually closed
+        if (event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
+          reconnectAttemptsRef.current++;
+          console.log(`[WebSocket Hook] Reconnecting in ${reconnectDelay}ms... (attempt ${reconnectAttemptsRef.current})`);
+          
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
-          }, 3000);
+          }, reconnectDelay);
         }
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setError('WebSocket 連接錯誤');
-        setConnectionStatus('error');
+        console.error('[WebSocket Hook] Connection error:', error);
+        setStatus('error');
       };
-    } catch (err) {
-      console.error('WebSocket connection error:', err);
-      setError('無法建立 WebSocket 連接');
-      setConnectionStatus('error');
-    }
-  }, [url]);
 
-  const sendMessage = useCallback((message: Partial<QRCodeMessage>) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-      return true;
+    } catch (error) {
+      console.error('[WebSocket Hook] Failed to create WebSocket:', error);
+      setStatus('error');
+    }
+  }, [wsUrl]);
+
+  const disconnect = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    if (wsRef.current) {
+      wsRef.current.close(1000, 'Manual disconnect');
+      wsRef.current = null;
+    }
+    
+    setStatus('disconnected');
+    reconnectAttemptsRef.current = maxReconnectAttempts; // Prevent auto-reconnect
+  }, []);
+
+  const sendMessage = useCallback((message: WebSocketMessage) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify(message));
+        console.log('[WebSocket Hook] Sent message:', message);
+      } catch (error) {
+        console.error('[WebSocket Hook] Failed to send message:', error);
+      }
     } else {
-      console.warn('WebSocket is not connected');
-      setError('WebSocket 未連接');
-      return false;
+      console.warn('[WebSocket Hook] Cannot send message, WebSocket not connected');
     }
   }, []);
 
-  const generateNewUUID = useCallback((options?: { size?: string; errorCorrection?: string }) => {
-    const success = sendMessage({
-      type: 'generate_uuid',
-      options
-    });
-    
-    if (!success) {
-      setError('無法發送生成請求，請檢查連接狀態');
-    }
-  }, [sendMessage]);
-
-  const requestGenerateUUID = useCallback(() => {
-    generateNewUUID();
-  }, [generateNewUUID]);
-
-  const notifyNewScan = useCallback((data: string) => {
-    sendMessage({
-      type: 'new_scan',
-      scanData: data
-    });
-  }, [sendMessage]);
-
   useEffect(() => {
+    // Auto-connect when component mounts
     connect();
 
     return () => {
-      // 清理函數
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close(1000, 'Component unmounting');
-      }
+      disconnect();
     };
-  }, [connect]);
+  }, [connect, disconnect]);
 
   return {
-    // 新的屬性 (符合您現有的程式碼)
-    isConnected,
-    connectionStatus,
+    status,
     sendMessage,
-    notifyNewScan,
-    requestGenerateUUID,
-    
-    // 新增的屬性 (符合 generate.tsx 的需求)
-    qrData,
-    error,
-    generateNewUUID
+    lastMessage,
+    connect,
+    disconnect
   };
 }

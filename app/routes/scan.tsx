@@ -1,8 +1,9 @@
-// app/routes/scan.tsx
+// app/routes/scan.tsx (Updated with WebSocket support)
 import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
-import { Link, json } from "@remix-run/react"; // Removed useFetcher as it's not used in this file directly for submission
-import QrScanner from "~/components/QrScanner"; // QrScanner will use useFetcher
+import { Link, json } from "@remix-run/react";
+import QrScanner from "~/components/QrScanner";
 import { pool } from "~/utils/db.server";
+import { broadcastToAll } from "~/utils/websocket.server";
 
 export const meta: MetaFunction = () => {
   return [
@@ -26,16 +27,24 @@ export async function action({ request }: ActionFunctionArgs) {
       const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id, data, scanned_at';
       const res = await client.query(queryText, [scannedData]);
       
-      // 成功寫入資料庫後，設定 localStorage 標記
-      // 注意：這部分程式碼實際上是在伺服器端執行，無法直接操作瀏覽器的 localStorage。
-      // 我們會在客戶端 QrScanner 組件的 fetcher.data 回調中處理 localStorage 的設定。
-      // 因此，action 函數返回成功訊息和新資料的 ID。
-      return json({
+      const result = {
         success: true,
         id: res.rows[0].id,
-        savedData: res.rows[0].data, // 返回儲存的資料
+        savedData: res.rows[0].data,
         message: "資料已成功儲存到資料庫！"
+      };
+
+      // Broadcast to all WebSocket clients
+      broadcastToAll({
+        type: 'qr_scanned',
+        data: {
+          id: result.id,
+          content: result.savedData,
+          scannedAt: res.rows[0].scanned_at
+        }
       });
+
+      return json(result);
     } finally {
       client.release();
     }
@@ -54,7 +63,7 @@ export default function ScanPage() {
             QR Code 掃描器
           </h1>
           <p className="text-slate-400">
-            將 QR Code 對準相機鏡頭以進行掃描。
+            將 QR Code 對準相機鏡頭以進行掃描。掃描結果會即時同步到產生頁面。
           </p>
         </header>
 
@@ -69,7 +78,7 @@ export default function ScanPage() {
           </Link>
         </div>
       </div>
-       <footer className="mt-12 text-center text-slate-500 text-sm">
+      <footer className="mt-12 text-center text-slate-500 text-sm">
         <p>
           使用{" "}
           <a href="https://remix.run" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">
