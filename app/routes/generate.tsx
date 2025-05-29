@@ -1,6 +1,6 @@
 // app/routes/generate.tsx
-import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from '@remix-run/node';
-import { json, useLoaderData, useFetcher } from '@remix-run/react';
+import type { LoaderFunctionArgs, MetaFunction } from '@remix-run/node';
+import { json, useLoaderData } from '@remix-run/react';
 import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 import { Link } from '@remix-run/react';
@@ -8,12 +8,12 @@ import { Link } from '@remix-run/react';
 export const meta: MetaFunction = () => {
   return [
     { title: '生成 QR Code' },
-    { name: 'description', content: '生成包含當前時間（UTC+08:00）的 QR Code' },
+    { name: 'description', content: '每 2 秒自動生成包含當前時間（UTC+08:00）的 QR Code' },
   ];
 };
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
-  console.log('[GENERATE LOADER] Generating QR code with timestamp');
+  console.log('[GENERATE LOADER] Generating initial QR code with timestamp');
   const textToEncode = Date.now().toString(); // 使用毫秒時間戳作為 QR Code 內容
   const currentTimestamp = Date.now();
   try {
@@ -28,7 +28,6 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       qrCodeDataUrl,
       error: null,
       sourceText: textToEncode,
-      intent: 'loader-generate-timestamp',
       timestamp: currentTimestamp,
     });
   } catch (error: any) {
@@ -38,7 +37,6 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
         qrCodeDataUrl: null,
         error: `生成 QR Code 時發生錯誤: ${error.message}`,
         sourceText: null,
-        intent: 'loader-generate-timestamp',
         timestamp: currentTimestamp,
       },
       { status: 500 },
@@ -46,52 +44,8 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   }
 }
 
-export async function action({ request }: ActionFunctionArgs) {
-  console.log('[GENERATE ACTION] Processing action request');
-  const formData = await request.formData();
-  const intent = formData.get('intent')?.toString();
-
-  if (intent === 'generate') {
-    console.log('[GENERATE ACTION] Generating new QR code with timestamp');
-    const textToEncode = Date.now().toString(); // 使用毫秒時間戳作為 QR Code 內容
-    const currentTimestamp = Date.now();
-    try {
-      const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-        errorCorrectionLevel: 'H',
-        width: 256,
-        margin: 2,
-        color: { dark: '#0F172A', light: '#FFFFFF' },
-      });
-      console.log('[GENERATE ACTION] QR code generated successfully');
-      return json({
-        qrCodeDataUrl,
-        error: null,
-        sourceText: textToEncode,
-        intent: 'action-generate-timestamp',
-        timestamp: currentTimestamp,
-      });
-    } catch (error: any) {
-      console.error('[GENERATE ACTION] Error generating QR code:', error.message);
-      return json(
-        {
-          qrCodeDataUrl: null,
-          error: `生成 QR Code 時發生錯誤: ${error.message}`,
-          sourceText: null,
-          intent: 'action-generate-timestamp',
-          timestamp: currentTimestamp,
-        },
-        { status: 500 },
-      );
-    }
-  }
-
-  console.error('[GENERATE ACTION] Invalid intent:', intent);
-  return json({ error: '無效的請求意圖', qrCodeDataUrl: null, sourceText: null, intent, timestamp: null }, { status: 400 });
-}
-
 export default function GeneratePage() {
   const loaderData = useLoaderData<typeof loader>();
-  const fetcher = useFetcher<typeof action>();
   const [latestData, setLatestData] = useState<{
     qrCodeDataUrl: string | null;
     sourceText: string | null;
@@ -104,18 +58,50 @@ export default function GeneratePage() {
     timestamp: loaderData.timestamp,
   });
 
+  // 每 2 秒自動生成新的 QR Code
   useEffect(() => {
-    if (fetcher.data) {
-      console.log('[GENERATE PAGE] Fetcher data received:', fetcher.data);
-      setLatestData({
-        qrCodeDataUrl: fetcher.data.qrCodeDataUrl,
-        sourceText: fetcher.data.sourceText,
-        error: fetcher.data.error,
-        timestamp: fetcher.data.timestamp,
-      });
-    }
-  }, [fetcher.data]);
+    const generateNewQrCode = async () => {
+      const textToEncode = Date.now().toString(); // 使用毫秒時間戳
+      const currentTimestamp = Date.now();
+      try {
+        const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
+          errorCorrectionLevel: 'H',
+          width: 256,
+          margin: 2,
+          color: { dark: '#0F172A', light: '#FFFFFF' },
+        });
+        console.log('[GENERATE PAGE] New QR code generated successfully');
+        setLatestData({
+          qrCodeDataUrl,
+          sourceText: textToEncode,
+          error: null,
+          timestamp: currentTimestamp,
+        });
+      } catch (error: any) {
+        console.error('[GENERATE PAGE] Error generating QR code:', error.message);
+        setLatestData({
+          qrCodeDataUrl: null,
+          sourceText: null,
+          error: `生成 QR Code 時發生錯誤: ${error.message}`,
+          timestamp: currentTimestamp,
+        });
+      }
+    };
 
+    // 立即生成一次
+    generateNewQrCode();
+
+    // 設置每 2 秒生成一次
+    const intervalId = setInterval(generateNewQrCode, 2000);
+
+    // 清理間隔計時器
+    return () => {
+      console.log('[GENERATE PAGE] Cleaning up interval');
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  // 監聽 storage 事件（保留與掃描頁面的互動）
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
       if (event.key === 'latestScannedDataTimestamp' && event.newValue) {
@@ -126,9 +112,47 @@ export default function GeneratePage() {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
+  // 格式化時間戳為 UTC+08:00
   const formatTimestamp = (timestamp: number | null): string => {
     if (!timestamp) return 'N/A';
-    return new Date(timestamp).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+    return new Date(timestamp).toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  };
+
+  // 手動生成新的 QR Code
+  const handleManualGenerate = async () => {
+    const textToEncode = Date.now().toString();
+    const currentTimestamp = Date.now();
+    try {
+      const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
+        errorCorrectionLevel: 'H',
+        width: 256,
+        margin: 2,
+        color: { dark: '#0F172A', light: '#FFFFFF' },
+      });
+      console.log('[GENERATE PAGE] Manual QR code generated successfully');
+      setLatestData({
+        qrCodeDataUrl,
+        sourceText: textToEncode,
+        error: null,
+        timestamp: currentTimestamp,
+      });
+    } catch (error: any) {
+      console.error('[GENERATE PAGE] Error generating manual QR code:', error.message);
+      setLatestData({
+        qrCodeDataUrl: null,
+        sourceText: null,
+        error: `生成 QR Code 時發生錯誤: ${error.message}`,
+        timestamp: currentTimestamp,
+      });
+    }
   };
 
   return (
@@ -138,19 +162,17 @@ export default function GeneratePage() {
           <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-400 mb-2">
             QR Code 生成器
           </h1>
-          <p className="text-slate-400">生成包含當前時間（UTC+08:00）的 QR Code</p>
+          <p className="text-slate-400">每 2 秒自動生成包含當前時間（UTC+08:00）的 QR Code</p>
         </header>
 
-        <fetcher.Form method="post" className="flex flex-col items-center space-y-4">
-          <input type="hidden" name="intent" value="generate" />
+        <div className="flex flex-col items-center space-y-4">
           <button
-            type="submit"
+            onClick={handleManualGenerate}
             className="bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md"
-            disabled={fetcher.state === 'submitting'}
           >
-            {fetcher.state === 'submitting' ? '生成中...' : '生成新的 QR Code'}
+            手動生成新的 QR Code
           </button>
-        </fetcher.Form>
+        </div>
 
         {latestData.error && (
           <div className="mt-4 p-4 bg-red-700 bg-opacity-50 border border-red-500 text-red-300 rounded-lg text-center w-full max-w-sm">
