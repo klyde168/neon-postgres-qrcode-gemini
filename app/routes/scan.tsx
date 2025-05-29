@@ -1,162 +1,16 @@
-// app/routes/scan.tsx
-import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
-import { Link, json } from "@remix-run/react";
-import QrScanner from "~/components/QrScanner";
+// app/routes/scan.tsx 的修復版本 action 函數
+import type { ActionFunctionArgs } from "@remix-run/node";
+import { json } from "@remix-run/react";
 import { pool } from "~/utils/db.server";
-
-export const meta: MetaFunction = () => {
-  return [
-    { title: "掃描 QR Code" },
-    { name: "description", content: "使用相機掃描 QR Code" },
-  ];
-};
-
-// 解析 QR Code 內容中的時間戳記
-function extractTimestampFromQRCode(qrContent: string): { timestamp: number | null, method: string } {
-  try {
-    console.log(`[時間解析] 開始解析 QR Code 內容: "${qrContent}"`);
-    
-    // 格式1: 純數字時間戳記 (13位毫秒或10位秒)
-    const numberMatch = qrContent.match(/\b(\d{10,13})\b/);
-    if (numberMatch) {
-      const timestamp = parseInt(numberMatch[1], 10);
-      // 如果是10位數字，轉換為毫秒
-      const finalTimestamp = timestamp.toString().length === 10 ? timestamp * 1000 : timestamp;
-      // 驗證是否為合理的時間戳記 (2000年後到2100年前)
-      if (finalTimestamp > 946684800000 && finalTimestamp < 4102444800000) {
-        console.log(`[時間解析] 使用數字時間戳記: ${numberMatch[1]} -> ${finalTimestamp}`);
-        return { timestamp: finalTimestamp, method: '數字時間戳記' };
-      }
-    }
-    
-    // 格式2: ISO 8601 格式 (YYYY-MM-DDTHH:mm:ss)
-    const isoMatch = qrContent.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})?)/);
-    if (isoMatch) {
-      const date = new Date(isoMatch[1]);
-      if (!isNaN(date.getTime())) {
-        console.log(`[時間解析] 使用 ISO 格式: ${isoMatch[1]} -> ${date.getTime()}`);
-        return { timestamp: date.getTime(), method: 'ISO 8601 格式' };
-      }
-    }
-    
-    // 格式3: 台灣時間格式 (YYYY/MM/DD HH:mm:ss)
-    const twDateMatch = qrContent.match(/(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})/);
-    if (twDateMatch) {
-      // 假設這是台灣時間，需要正確解析
-      const dateStr = twDateMatch[1].replace(/\//g, '-'); // 轉換為標準格式
-      const date = new Date(dateStr);
-      if (!isNaN(date.getTime())) {
-        console.log(`[時間解析] 使用台灣時間格式: ${twDateMatch[1]} -> ${dateStr} -> ${date.getTime()}`);
-        console.log(`[時間解析] 解析後的時間: ${formatTimestamp(date.getTime())}`);
-        return { timestamp: date.getTime(), method: '台灣時間格式' };
-      }
-    }
-    
-    // 格式4: 其他常見日期格式
-    const dateFormats = [
-      { regex: /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})/, name: 'MM/DD/YYYY 格式' },
-      { regex: /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/, name: 'YYYY-MM-DD 格式' }
-    ];
-    
-    for (const format of dateFormats) {
-      const match = qrContent.match(format.regex);
-      if (match) {
-        const date = new Date(match[1]);
-        if (!isNaN(date.getTime())) {
-          console.log(`[時間解析] 使用 ${format.name}: ${match[1]} -> ${date.getTime()}`);
-          return { timestamp: date.getTime(), method: format.name };
-        }
-      }
-    }
-    
-    console.log(`[時間解析] 無法解析時間戳記從內容: "${qrContent}"`);
-    return { timestamp: null, method: '無法解析' };
-  } catch (error) {
-    console.error("[時間解析] 解析錯誤:", error);
-    return { timestamp: null, method: '解析錯誤' };
-  }
-}
-
-// 格式化時間顯示（使用 UTC+08:00 時區）
-function formatTimestamp(timestamp: number): string {
-  const date = new Date(timestamp);
-  // 確保使用 UTC+08:00 時區 (Asia/Taipei)
-  return date.toLocaleString('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-}
-
-// 格式化時間差距顯示
-function formatTimeDifference(seconds: number): string {
-  const absSeconds = Math.abs(seconds);
-  const sign = seconds >= 0 ? '+' : '-';
-  
-  if (absSeconds < 60) {
-    return `${sign}${absSeconds} 秒`;
-  } else if (absSeconds < 3600) {
-    const minutes = Math.floor(absSeconds / 60);
-    const remainingSeconds = absSeconds % 60;
-    return `${sign}${minutes} 分 ${remainingSeconds} 秒`;
-  } else {
-    const hours = Math.floor(absSeconds / 3600);
-    const minutes = Math.floor((absSeconds % 3600) / 60);
-    const remainingSeconds = absSeconds % 60;
-    return `${sign}${hours} 時 ${minutes} 分 ${remainingSeconds} 秒`;
-  }
-}
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const scannedDataValue = formData.get("scannedData");
-  const scanTimestampValue = formData.get("scanTimestamp");
 
   if (typeof scannedDataValue !== "string" || scannedDataValue.trim() === "") {
     return json({ success: false, error: "掃描到的資料是空的或無效的。" }, { status: 400 });
   }
-
-  if (typeof scanTimestampValue !== "string" || !scanTimestampValue) {
-    return json({ success: false, error: "掃描時間戳記無效。" }, { status: 400 });
-  }
-
   const scannedData = scannedDataValue;
-  const scanTimestamp = parseInt(scanTimestampValue, 10);
-  const currentTimestamp = Date.now();
-  const timeDifference = Math.floor((currentTimestamp - scanTimestamp) / 1000); // 時間差（秒）
-
-  // 解析 QR Code 內容中的時間戳記
-  const qrTimestampResult = extractTimestampFromQRCode(scannedData);
-  const qrTimestamp = qrTimestampResult.timestamp;
-  
-  console.log(`[Action] QR Code 時間解析結果: ${qrTimestampResult.method}, 時間戳記: ${qrTimestamp}`);
-  
-  // 計算掃描時間與 QR Code 內容時間的差距
-  let qrTimeDifference: number | null = null;
-  if (qrTimestamp) {
-    qrTimeDifference = Math.floor((scanTimestamp - qrTimestamp) / 1000);
-    console.log(`[Action] 時間差距計算: 掃描時間(${scanTimestamp}) - QR時間(${qrTimestamp}) = ${qrTimeDifference} 秒`);
-  }
-
-  // 檢查掃描後的時間差是否在5秒內
-  if (timeDifference > 5) {
-    return json({ 
-      success: false, 
-      error: `掃描資料已過期（${timeDifference} 秒前），請重新掃描。`,
-      timeDifference,
-      scanTime: formatTimestamp(scanTimestamp),
-      currentTime: formatTimestamp(currentTimestamp),
-      qrTimestamp: qrTimestamp ? formatTimestamp(qrTimestamp) : null,
-      qrTimeDifference,
-      qrTimeDifferenceFormatted: qrTimeDifference !== null ? formatTimeDifference(qrTimeDifference) : null,
-      qrParseMethod: qrTimestampResult.method
-    }, { status: 400 });
-  }
 
   try {
     const client = await pool.connect();
@@ -164,21 +18,16 @@ export async function action({ request }: ActionFunctionArgs) {
       const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id, data, scanned_at';
       const res = await client.query(queryText, [scannedData]);
       
-      const savedTimestamp = new Date(res.rows[0].scanned_at).getTime();
+      const savedRecord = res.rows[0];
+      const now = new Date();
       
       return json({
         success: true,
-        id: res.rows[0].id,
-        savedData: res.rows[0].data,
-        message: `資料已成功儲存到資料庫！（掃描後 ${timeDifference} 秒）`,
-        timeDifference,
-        scanTime: formatTimestamp(scanTimestamp),
-        currentTime: formatTimestamp(currentTimestamp),
-        savedTime: formatTimestamp(savedTimestamp),
-        qrTimestamp: qrTimestamp ? formatTimestamp(qrTimestamp) : null,
-        qrTimeDifference,
-        qrTimeDifferenceFormatted: qrTimeDifference !== null ? formatTimeDifference(qrTimeDifference) : null,
-        qrParseMethod: qrTimestampResult.method
+        id: savedRecord.id,
+        savedData: savedRecord.data,
+        message: `資料已成功儲存到資料庫！`,
+        scannedAt: savedRecord.scanned_at,
+        savedAt: now.toISOString()
       });
     } finally {
       client.release();
@@ -187,45 +36,4 @@ export async function action({ request }: ActionFunctionArgs) {
     console.error("Database error in /scan action:", error);
     return json({ success: false, error: "儲存資料到資料庫時失敗。" }, { status: 500 });
   }
-}
-
-export default function ScanPage() {
-  return (
-    <div className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 p-6 font-sans">
-      <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-lg">
-        <header className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-400 mb-2">
-            QR Code 掃描器
-          </h1>
-          <p className="text-slate-400">
-            將 QR Code 對準相機鏡頭以進行掃描。掃描後5秒內會自動儲存到資料庫。
-          </p>
-        </header>
-
-        <QrScanner />
-
-        <div className="mt-8 text-center">
-          <Link
-            to="/"
-            className="inline-block text-purple-400 hover:text-purple-300 hover:underline transition-colors"
-          >
-            &larr; 返回主頁
-          </Link>
-        </div>
-      </div>
-       <footer className="mt-12 text-center text-slate-500 text-sm">
-        <p>
-          使用{" "}
-          <a href="https://remix.run" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">
-            Remix
-          </a>{" "}
-          和{" "}
-          <a href="https://tailwindcss.com" target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
-            Tailwind CSS
-          </a>{" "}
-          製作。
-        </p>
-      </footer>
-    </div>
-  );
 }

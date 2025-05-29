@@ -6,31 +6,6 @@ import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
 import { pool } from "~/utils/db.server";
 
-// 統一的時間格式化函數（使用 UTC+08:00）
-function formatTimestamp(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleString('zh-TW', {
-    timeZone: 'Asia/Taipei', // UTC+08:00
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-}
-
-// 生成包含當前時間戳記的 UUID 內容
-function generateTimestampedUUID(): string {
-  const uuid = randomUUID();
-  const currentTime = Date.now();
-  const formattedTime = formatTimestamp(currentTime);
-  
-  // 格式：UUID_時間戳記_格式化時間
-  return `${uuid}_${currentTime}_${formattedTime}`;
-}
-
 // Helper for client-side logging to appear in the UI debug log
 const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<string[]>>) => {
   return (message: string, isError: boolean = false) => {
@@ -54,7 +29,6 @@ type QrCodeResponse = {
   sourceText?: string | null;
   intent?: string | null;
   timestamp?: number;
-  generatedTime?: string;
 };
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
@@ -75,9 +49,9 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
         textToEncode = res.rows[0].data;
         console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data: "${textToEncode}" (scanned_at: ${res.rows[0].scanned_at})`);
       } else {
-        textToEncode = generateTimestampedUUID();
+        textToEncode = randomUUID();
         intent = "loader-initial-uuid";
-        console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated timestamped UUID: "${textToEncode}"`);
+        console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated UUID: "${textToEncode}"`);
       }
     } finally {
       client.release();
@@ -86,15 +60,15 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   } catch (dbError: any) {
     console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
     errorMsg = "讀取最新掃描資料時發生錯誤。";
-    textToEncode = generateTimestampedUUID();
+    textToEncode = randomUUID();
     intent = "loader-db-error-fallback-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback timestamped UUID: "${textToEncode}"`);
+    console.log(`[LOADER ${loaderExecutionId}] DB error, generated fallback UUID: "${textToEncode}"`);
   }
 
   if (!textToEncode) {
-    textToEncode = generateTimestampedUUID();
+    textToEncode = randomUUID();
     intent = "loader-final-fallback-uuid";
-    console.log(`[LOADER ${loaderExecutionId}] Final fallback timestamped UUID: "${textToEncode}"`);
+    console.log(`[LOADER ${loaderExecutionId}] Final fallback UUID: "${textToEncode}"`);
   }
 
   console.log(`[LOADER ${loaderExecutionId}] Text to encode: "${textToEncode}"`);
@@ -104,29 +78,15 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[LOADER ${loaderExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ 
-      qrCodeDataUrl, 
-      error: errorMsg, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp,
-      generatedTime: formatTimestamp(currentTimestamp)
-    } as QrCodeResponse);
+    return json({ qrCodeDataUrl, error: errorMsg, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
   } catch (qrErr: any) {
     console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
-    return json({ 
-      error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, 
-      qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp,
-      generatedTime: formatTimestamp(currentTimestamp)
-    } as QrCodeResponse, { status: 500 });
+    return json({ error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
   }
 }
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const actionExecutionId = randomUUID().substring(0,8);
+  const actionExecutionId = randomUUID().substring(0, 8);
   console.log(`[ACTION ${actionExecutionId}] Initiated.`);
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
@@ -136,18 +96,11 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
 
   if (intent === "generate-uuid-via-action") {
-    textToEncode = generateTimestampedUUID();
-    console.log(`[ACTION ${actionExecutionId}] New timestamped UUID generated: "${textToEncode}"`);
+    textToEncode = randomUUID();
+    console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
   } else {
     console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
-    return json({ 
-      error: "無效的操作。", 
-      qrCodeDataUrl: null, 
-      sourceText: null, 
-      intent, 
-      timestamp: currentTimestamp,
-      generatedTime: formatTimestamp(currentTimestamp)
-    } as QrCodeResponse, { status: 400 });
+    return json({ error: "無效的操作。", qrCodeDataUrl: null, sourceText: null, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 400 });
   }
 
   const sizeValue = formData.get("size") || "256";
@@ -162,24 +115,10 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
     console.log(`[ACTION ${actionExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
-    return json({ 
-      qrCodeDataUrl, 
-      error: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp,
-      generatedTime: formatTimestamp(currentTimestamp)
-    } as QrCodeResponse);
+    return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
   } catch (err: any) {
     console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
-    return json({ 
-      error: "產生 QR Code 時發生錯誤。", 
-      qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp,
-      generatedTime: formatTimestamp(currentTimestamp)
-    } as QrCodeResponse, { status: 500 });
+    return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
   }
 }
 
@@ -195,16 +134,16 @@ export default function GeneratePage() {
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
+  const autoUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, generatedTime=${initialLoaderData.generatedTime}, text="${initialLoaderData.sourceText?.substring(0,30)}..."`);
+    addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}..."`);
     setCurrentDisplayData(initialLoaderData);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialLoaderData]);
+  }, [initialLoaderData, addUiDebugMessage]);
 
   useEffect(() => {
     if (actionData) {
-      addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, generatedTime=${actionData.generatedTime}, text="${actionData.sourceText?.substring(0,30)}..."`);
+      addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}..."`);
       if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
         addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
@@ -214,6 +153,32 @@ export default function GeneratePage() {
     }
   }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
 
+  // 新增：2秒自動更新機制
+  useEffect(() => {
+    addUiDebugMessage("設置 2 秒自動更新計時器");
+    
+    // 清除現有的計時器
+    if (autoUpdateIntervalRef.current) {
+      clearInterval(autoUpdateIntervalRef.current);
+    }
+    
+    // 設置新的計時器
+    autoUpdateIntervalRef.current = setInterval(() => {
+      addUiDebugMessage("2 秒計時器觸發，重新載入資料");
+      revalidator.revalidate();
+    }, 2000);
+
+    // 清理函數
+    return () => {
+      if (autoUpdateIntervalRef.current) {
+        addUiDebugMessage("清除 2 秒自動更新計時器");
+        clearInterval(autoUpdateIntervalRef.current);
+        autoUpdateIntervalRef.current = null;
+      }
+    };
+  }, [revalidator, addUiDebugMessage]);
+
+  // localStorage 同步機制（保持原有功能）
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
       addUiDebugMessage(`Storage event: key=${event.key}, newValue=${event.newValue?.substring(0,50)}, oldValue=${event.oldValue?.substring(0,50)}`);
@@ -235,18 +200,19 @@ export default function GeneratePage() {
     window.addEventListener('storage', handleStorageChange);
     addUiDebugMessage("Storage event listener added.");
 
+    // Initial check on mount
     const latestStoredTimestamp = localStorage.getItem('latestScannedDataTimestamp');
     if (latestStoredTimestamp) {
-        addUiDebugMessage(`Initial mount check - localStorage latestScannedDataTimestamp: ${latestStoredTimestamp}, loaderData ts: ${initialLoaderData.timestamp}, intent: ${initialLoaderData.intent}`);
-        if (initialLoaderData.intent !== "loader-fetch-latest" || (initialLoaderData.timestamp && parseInt(latestStoredTimestamp, 10) > initialLoaderData.timestamp)) {
-            if (latestStoredTimestamp !== localStorage.getItem('lastRevalidatedTimestamp')) {
-                addUiDebugMessage("Found newer data in localStorage on initial mount, revalidating.");
-                revalidator.revalidate();
-                localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
-            } else {
-                addUiDebugMessage("Newer data in localStorage on mount, but already revalidated for this timestamp.");
-            }
+      addUiDebugMessage(`Initial mount check - localStorage latestScannedDataTimestamp: ${latestStoredTimestamp}, loaderData ts: ${initialLoaderData.timestamp}, intent: ${initialLoaderData.intent}`);
+      if (initialLoaderData.intent !== "loader-fetch-latest" || (initialLoaderData.timestamp && parseInt(latestStoredTimestamp, 10) > initialLoaderData.timestamp)) {
+        if (latestStoredTimestamp !== localStorage.getItem('lastRevalidatedTimestamp')) {
+          addUiDebugMessage("Found newer data in localStorage on initial mount, revalidating.");
+          revalidator.revalidate();
+          localStorage.setItem('lastRevalidatedTimestamp', latestStoredTimestamp);
+        } else {
+          addUiDebugMessage("Newer data in localStorage on mount, but already revalidated for this timestamp.");
         }
+      }
     }
 
     return () => {
@@ -269,12 +235,12 @@ export default function GeneratePage() {
       <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-lg">
         {/* UI Debug Log Display */}
         {debugMessages.length > 0 && (
-            <div className="w-full p-2 mb-4 bg-slate-950 border border-slate-700 text-slate-400 text-xs rounded-md shadow-inner max-h-32 overflow-y-auto font-mono">
+          <div className="w-full p-2 mb-4 bg-slate-950 border border-slate-700 text-slate-400 text-xs rounded-md shadow-inner max-h-32 overflow-y-auto font-mono">
             <p className="font-semibold text-slate-300 mb-1 border-b border-slate-700 pb-1">客戶端日誌 (Client Log):</p>
             {debugMessages.map((msg, index) => (
-                <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">{msg.substring(msg.indexOf(']') + 2)}</div>
+              <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">{msg.substring(msg.indexOf(']') + 2)}</div>
             ))}
-            </div>
+          </div>
         )}
 
         <header className="mb-8 text-center">
@@ -283,66 +249,65 @@ export default function GeneratePage() {
           </h1>
           <p className="text-slate-400">
             {currentDisplayData?.intent === "loader-initial-uuid" || currentDisplayData?.intent?.includes("fallback-uuid")
-              ? "初始顯示帶時間戳記的 UUID QR Code。最新掃描資料將自動更新於此。"
+              ? "初始顯示 UUID QR Code。最新掃描資料將每 2 秒自動更新於此。"
               : currentDisplayData?.intent === "loader-fetch-latest"
-              ? "顯示最新掃描的 QR Code。"
+              ? "顯示最新掃描的 QR Code（每 2 秒自動更新）。"
               : currentDisplayData?.intent === "generate-uuid-via-action"
-              ? "顯示新產生的帶時間戳記 UUID QR Code。"
-              : "掃描資料將更新於此，或點擊按鈕產生新的帶時間戳記 UUID QR Code。"
+              ? "顯示新產生的 UUID QR Code。"
+              : "掃描資料將每 2 秒自動更新，或點擊按鈕產生新的 UUID QR Code。"
             }
           </p>
-          {/* 顯示產生時間 */}
-          {currentDisplayData?.generatedTime && (
-            <p className="text-slate-500 text-sm mt-2">
-              產生時間：{currentDisplayData.generatedTime} (UTC+08:00)
-            </p>
-          )}
         </header>
 
         <div className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label htmlFor="qr-size-display" className="block text-sm font-medium text-slate-300 mb-1">
-                    尺寸 (像素):
-                    </label>
-                    <select
-                    id="qr-size-display"
-                    value={qrSize}
-                    onChange={(e) => setQrSize(e.target.value)}
-                    className="w-full p-3 bg-slate-700 border border-slate-600 rounded-md text-slate-200 focus:ring-purple-500 focus:border-purple-500"
-                    >
-                    <option value="128">128px</option>
-                    <option value="256">256px (預設)</option>
-                    <option value="384">384px</option>
-                    <option value="512">512px</option>
-                    </select>
-                </div>
-                <div>
-                    <label htmlFor="error-correction-display" className="block text-sm font-medium text-slate-300 mb-1">
-                    容錯等級:
-                    </label>
-                    <select
-                    id="error-correction-display"
-                    value={errorCorrection}
-                    onChange={(e) => setErrorCorrection(e.target.value as QRCode.QRCodeErrorCorrectionLevel)}
-                    className="w-full p-3 bg-slate-700 border border-slate-600 rounded-md text-slate-200 focus:ring-purple-500 focus:border-purple-500"
-                    >
-                    <option value="L">L (約 7%)</option>
-                    <option value="M">M (約 15%)</option>
-                    <option value="Q">Q (約 25%)</option>
-                    <option value="H">H (約 30% - 預設)</option>
-                    </select>
-                </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="qr-size-display" className="block text-sm font-medium text-slate-300 mb-1">
+                尺寸 (像素):
+              </label>
+              <select
+                id="qr-size-display"
+                value={qrSize}
+                onChange={(e) => setQrSize(e.target.value)}
+                className="w-full p-3 bg-slate-700 border border-slate-600 rounded-md text-slate-200 focus:ring-purple-500 focus:border-purple-500"
+              >
+                <option value="128">128px</option>
+                <option value="256">256px (預設)</option>
+                <option value="384">384px</option>
+                <option value="512">512px</option>
+              </select>
             </div>
+            <div>
+              <label htmlFor="error-correction-display" className="block text-sm font-medium text-slate-300 mb-1">
+                容錯等級:
+              </label>
+              <select
+                id="error-correction-display"
+                value={errorCorrection}
+                onChange={(e) => setErrorCorrection(e.target.value as QRCode.QRCodeErrorCorrectionLevel)}
+                className="w-full p-3 bg-slate-700 border border-slate-600 rounded-md text-slate-200 focus:ring-purple-500 focus:border-purple-500"
+              >
+                <option value="L">L (約 7%)</option>
+                <option value="M">M (約 15%)</option>
+                <option value="Q">Q (約 25%)</option>
+                <option value="H">H (約 30% - 預設)</option>
+              </select>
+            </div>
+          </div>
 
-            <button
-                type="button"
-                onClick={handleGenerateNewUuid}
-                className="w-full bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-cyan-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw inline-block mr-2 align-middle"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-                產生新的帶時間戳記 UUID QR Code
-            </button>
+          <button
+            type="button"
+            onClick={handleGenerateNewUuid}
+            className="w-full bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-cyan-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw inline-block mr-2 align-middle">
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+              <path d="M3 21v-5h5"/>
+            </svg>
+            產生新的 UUID QR Code
+          </button>
         </div>
 
         {currentDisplayData?.error && (
@@ -356,25 +321,26 @@ export default function GeneratePage() {
           <div className="mt-8 text-center p-6 bg-slate-700 rounded-lg shadow-inner">
             <h3 className="text-xl font-semibold text-slate-100 mb-2">目前 QR Code：</h3>
             {currentDisplayData?.sourceText && (
-                <div className="text-xs text-slate-400 mb-3 break-all max-w-xs mx-auto">
-                  <p className="font-semibold mb-1">內容:</p>
-                  <p className="font-mono bg-slate-600 p-2 rounded">{currentDisplayData.sourceText}</p>
-                </div>
+              <p className="text-xs text-slate-400 mb-3 break-all max-w-xs mx-auto">內容: {currentDisplayData.sourceText}</p>
             )}
             <div className="flex justify-center items-center bg-white p-2 rounded-md inline-block shadow-lg">
-                <img
+              <img
                 ref={imgRef}
                 src={currentDisplayData.qrCodeDataUrl}
                 alt="產生的 QR Code"
                 className="mx-auto"
-                />
+              />
             </div>
             <a
               href={currentDisplayData.qrCodeDataUrl}
               download={`qrcode_${(currentDisplayData.sourceText?.substring(0,15).replace(/[^a-zA-Z0-9]/g, '_')) || 'generated'}.png`}
               className="mt-6 inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-700 transition-colors"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download mr-2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download mr-2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" x2="12" y1="15" y2="3"/>
+              </svg>
               下載 QR Code
             </a>
           </div>
@@ -389,7 +355,7 @@ export default function GeneratePage() {
           </Link>
         </div>
       </div>
-       <footer className="mt-12 text-center text-slate-500 text-sm">
+      <footer className="mt-12 text-center text-slate-500 text-sm">
         <p>
           使用{" "}
           <a href="https://remix.run" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">
