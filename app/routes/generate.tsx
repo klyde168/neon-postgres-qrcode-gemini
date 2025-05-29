@@ -1,20 +1,9 @@
 // app/routes/generate.tsx
 import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { Link, useActionData, json, useSubmit, useLoaderData } from "@remix-run/react";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
-import { pool } from "~/utils/db.server";
-
-// Helper for client-side logging to appear in the UI debug log
-const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<string[]>>) => {
-  return (message: string, isError: boolean = false) => {
-    const fullMessage = `[CLIENT ${new Date().toLocaleTimeString()}.${String(new Date().getMilliseconds()).padStart(3, '0')}] ${message}`;
-    if (isError) console.error(fullMessage);
-    else console.log(fullMessage);
-    setDebugMessages(prev => [...prev.slice(Math.max(0, prev.length - 24)), fullMessage]);
-  };
-};
 
 export const meta: MetaFunction = () => {
   return [
@@ -27,20 +16,11 @@ type QrCodeResponse = {
   qrCodeDataUrl?: string | null;
   error?: string | null;
   sourceText?: string | null;
-  intent?: string | null;
-  timestamp?: number;
 };
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
-  const loaderExecutionId = randomUUID().substring(0, 8);
-  console.log(`[LOADER ${loaderExecutionId}] Initiated.`);
-  
-  // 直接產生 UUID，不再讀取資料庫的掃描資料
+  // 直接產生 UUID
   const textToEncode = randomUUID();
-  const intent = "loader-initial-uuid";
-  const currentTimestamp = Date.now();
-
-  console.log(`[LOADER ${loaderExecutionId}] Generated UUID: "${textToEncode}"`);
 
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
@@ -49,53 +29,36 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
-    console.log(`[LOADER ${loaderExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
+    
     return json({ 
       qrCodeDataUrl, 
       error: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+      sourceText: textToEncode
     } as QrCodeResponse);
   } catch (qrErr: any) {
-    console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
     return json({ 
       error: `產生 QR Code 失敗: ${qrErr.message || '未知錯誤'}`, 
       qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+      sourceText: textToEncode
     } as QrCodeResponse, { status: 500 });
   }
 }
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const actionExecutionId = randomUUID().substring(0, 8);
-  console.log(`[ACTION ${actionExecutionId}] Initiated.`);
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
-  let textToEncode: string | null = null;
-  const currentTimestamp = Date.now();
 
-  console.log(`[ACTION ${actionExecutionId}] Intent: ${intent}`);
-
-  if (intent === "generate-uuid-via-action") {
-    textToEncode = randomUUID();
-    console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
-  } else {
-    console.log(`[ACTION ${actionExecutionId}] Invalid intent received.`);
+  if (intent !== "generate-uuid-via-action") {
     return json({ 
       error: "無效的操作。", 
       qrCodeDataUrl: null, 
-      sourceText: null, 
-      intent, 
-      timestamp: currentTimestamp 
+      sourceText: null
     } as QrCodeResponse, { status: 400 });
   }
 
+  const textToEncode = randomUUID();
   const sizeValue = formData.get("size") || "256";
   const errorCorrectionLevelValue = formData.get("errorCorrectionLevel") || "H";
-  console.log(`[ACTION ${actionExecutionId}] QR Params: size=${sizeValue}, ecLevel=${errorCorrectionLevelValue}`);
 
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
@@ -104,22 +67,17 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
-    console.log(`[ACTION ${actionExecutionId}] QR Code generated successfully for: "${textToEncode}"`);
+    
     return json({ 
       qrCodeDataUrl, 
       error: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+      sourceText: textToEncode
     } as QrCodeResponse);
   } catch (err: any) {
-    console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
     return json({ 
       error: "產生 QR Code 時發生錯誤。", 
       qrCodeDataUrl: null, 
-      sourceText: textToEncode, 
-      intent, 
-      timestamp: currentTimestamp 
+      sourceText: textToEncode
     } as QrCodeResponse, { status: 500 });
   }
 }
@@ -127,35 +85,23 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
 export default function GeneratePage() {
   const initialLoaderData = useLoaderData<QrCodeResponse>();
   const actionData = useActionData<QrCodeResponse>();
-  const [debugMessages, setDebugMessages] = useState<string[]>([]);
-  const addUiDebugMessage = useCallback(getUiLogger(setDebugMessages), []);
 
   const [currentDisplayData, setCurrentDisplayData] = useState<QrCodeResponse>(initialLoaderData);
   const [qrSize, setQrSize] = useState("256");
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
-  const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
 
   useEffect(() => {
-    addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}, text="${initialLoaderData.sourceText?.substring(0,30)}..."`);
     setCurrentDisplayData(initialLoaderData);
-  }, [initialLoaderData, addUiDebugMessage]);
+  }, [initialLoaderData]);
 
   useEffect(() => {
     if (actionData) {
-      addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}, text="${actionData.sourceText?.substring(0,30)}..."`);
-      // Always prefer actionData if it exists and is different (based on timestamp)
-      if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
-        addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
-        setCurrentDisplayData(actionData);
-      } else {
-        addUiDebugMessage(`Action data (ts: ${actionData.timestamp}) not newer than current (ts: ${currentDisplayData.timestamp}). No UI update from actionData.`);
-      }
+      setCurrentDisplayData(actionData);
     }
-  }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
+  }, [actionData]);
 
   const handleGenerateNewUuid = () => {
-    addUiDebugMessage("Button click: handleGenerateNewUuid");
     const formData = new FormData();
     formData.append("intent", "generate-uuid-via-action");
     formData.append("size", qrSize);
@@ -166,18 +112,6 @@ export default function GeneratePage() {
   return (
     <div className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 p-6 font-sans">
       <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-lg">
-        {/* UI Debug Log Display */}
-        {debugMessages.length > 0 && (
-          <div className="w-full p-2 mb-4 bg-slate-950 border border-slate-700 text-slate-400 text-xs rounded-md shadow-inner max-h-32 overflow-y-auto font-mono">
-            <p className="font-semibold text-slate-300 mb-1 border-b border-slate-700 pb-1">客戶端日誌 (Client Log):</p>
-            {debugMessages.map((msg, index) => (
-              <div key={index} className="whitespace-pre-wrap break-all py-0.5 even:bg-slate-900 px-1">
-                {msg.substring(msg.indexOf(']') + 2)}
-              </div>
-            ))}
-          </div>
-        )}
-
         <header className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500 mb-2">
             QR Code 產生器
@@ -255,7 +189,6 @@ export default function GeneratePage() {
             )}
             <div className="flex justify-center items-center bg-white p-2 rounded-md inline-block shadow-lg">
               <img
-                ref={imgRef}
                 src={currentDisplayData.qrCodeDataUrl}
                 alt="產生的 QR Code"
                 className="mx-auto"
