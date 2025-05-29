@@ -2,7 +2,7 @@
 import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
 import { Link, json } from "@remix-run/react";
 import QrScanner from "~/components/QrScanner";
-import { pool } from "~/utils/db.server";
+import { pool } from "db.server";
 
 export const meta: MetaFunction = () => {
   return [

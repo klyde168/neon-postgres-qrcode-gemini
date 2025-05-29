@@ -1,7 +1,7 @@
 // app/routes/api.check-updates.ts
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { pool } from "~/utils/db.server";
+import { pool } from "db.server";
 import { randomUUID } from "node:crypto";
 
 export async function loader({ request }: LoaderFunctionArgs) {
