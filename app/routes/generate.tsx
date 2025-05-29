@@ -1,11 +1,9 @@
-// app/routes/generate.tsx (Updated with WebSocket support)
+// app/routes/generate.tsx (自動更新版本)
 import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { Link, useActionData, json, useSubmit, useLoaderData } from "@remix-run/react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
-import { pool } from "~/utils/db.server";
-import { useWebSocket } from "~/hooks/useWebSocket";
 
 // Helper for client-side logging
 const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<string[]>>) => {
@@ -19,8 +17,8 @@ const getUiLogger = (setDebugMessages: React.Dispatch<React.SetStateAction<strin
 
 export const meta: MetaFunction = () => {
   return [
-    { title: "產生 QR Code" },
-    { name: "description", content: "顯示最新掃描的 QR Code 或產生新的 UUID QR Code" },
+    { title: "自動更新 QR Code" },
+    { name: "description", content: "每2秒自動產生新的 UUID + 時間 QR Code" },
   ];
 };
 
@@ -28,89 +26,104 @@ type QrCodeResponse = {
   qrCodeDataUrl?: string | null;
   error?: string | null;
   sourceText?: string | null;
-  intent?: string | null;
   timestamp?: number;
 };
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
-  const loaderExecutionId = randomUUID().substring(0, 8);
-  console.log(`[LOADER ${loaderExecutionId}] Initiated.`);
-  let textToEncode: string | null = null;
-  let errorMsg: string | null = null;
-  let intent = "loader-fetch-latest";
   const currentTimestamp = Date.now();
-
-  try {
-    const client = await pool.connect();
-    console.log(`[LOADER ${loaderExecutionId}] Database client connected.`);
-    try {
-      const latestScanQuery = 'SELECT data, scanned_at FROM scanned_data ORDER BY id DESC LIMIT 1';
-      const res = await client.query(latestScanQuery);
-      if (res.rows.length > 0 && res.rows[0].data) {
-        textToEncode = res.rows[0].data;
-        console.log(`[LOADER ${loaderExecutionId}] Fetched latest scanned data: "${textToEncode}"`);
-      } else {
-        textToEncode = randomUUID();
-        intent = "loader-initial-uuid";
-        console.log(`[LOADER ${loaderExecutionId}] No scanned data in DB, generated UUID: "${textToEncode}"`);
-      }
-    } finally {
-      client.release();
-    }
-  } catch (dbError: any) {
-    console.error(`[LOADER ${loaderExecutionId}] Database error:`, dbError.message);
-    errorMsg = "讀取最新掃描資料時發生錯誤。";
-    textToEncode = randomUUID();
-    intent = "loader-db-error-fallback-uuid";
-  }
-
-  if (!textToEncode) {
-    textToEncode = randomUUID();
-    intent = "loader-final-fallback-uuid";
-  }
+  const uuid = randomUUID();
+  const currentTime = new Date().toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  
+  const textToEncode = `${uuid}\n${currentTime}`;
+  console.log(`[LOADER] Generated content: "${textToEncode}"`);
 
   try {
     const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-      errorCorrectionLevel: "H", width: 256, margin: 2,
+      errorCorrectionLevel: "H",
+      width: 256,
+      margin: 2,
       color: { dark: "#0F172A", light: "#FFFFFF" }
     });
-    return json({ qrCodeDataUrl, error: errorMsg, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
+    
+    return json({
+      qrCodeDataUrl,
+      error: null,
+      sourceText: textToEncode,
+      timestamp: currentTimestamp
+    } as QrCodeResponse);
   } catch (qrErr: any) {
-    console.error(`[LOADER ${loaderExecutionId}] QR Code generation error:`, qrErr.message);
-    return json({ error: `產生 QR Code 失敗: ${errorMsg || qrErr.message || '未知錯誤'}`, qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
+    console.error(`[LOADER] QR Code generation error:`, qrErr.message);
+    return json({
+      error: `產生 QR Code 失敗: ${qrErr.message || '未知錯誤'}`,
+      qrCodeDataUrl: null,
+      sourceText: textToEncode,
+      timestamp: currentTimestamp
+    } as QrCodeResponse, { status: 500 });
   }
 }
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const actionExecutionId = randomUUID().substring(0, 8);
-  console.log(`[ACTION ${actionExecutionId}] Initiated.`);
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
-  let textToEncode: string | null = null;
   const currentTimestamp = Date.now();
 
-  if (intent === "generate-uuid-via-action") {
-    textToEncode = randomUUID();
-    console.log(`[ACTION ${actionExecutionId}] New UUID generated: "${textToEncode}"`);
-  } else {
-    return json({ error: "無效的操作。", qrCodeDataUrl: null, sourceText: null, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 400 });
-  }
-
-  const sizeValue = formData.get("size") || "256";
-  const errorCorrectionLevelValue = formData.get("errorCorrectionLevel") || "H";
-
-  try {
-    const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
-      errorCorrectionLevel: errorCorrectionLevelValue as QRCode.QRCodeErrorCorrectionLevel,
-      width: parseInt(sizeValue as string, 10),
-      margin: 2,
-      color: { dark: "#0F172A", light: "#FFFFFF" }
+  if (intent === "generate-new-qr") {
+    const uuid = randomUUID();
+    const currentTime = new Date().toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
     });
-    return json({ qrCodeDataUrl, error: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse);
-  } catch (err: any) {
-    console.error(`[ACTION ${actionExecutionId}] QR Code generation error:`, err.message);
-    return json({ error: "產生 QR Code 時發生錯誤。", qrCodeDataUrl: null, sourceText: textToEncode, intent, timestamp: currentTimestamp } as QrCodeResponse, { status: 500 });
+    
+    const textToEncode = `${uuid}\n${currentTime}`;
+    const sizeValue = formData.get("size") || "256";
+    const errorCorrectionLevelValue = formData.get("errorCorrectionLevel") || "H";
+
+    try {
+      const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
+        errorCorrectionLevel: errorCorrectionLevelValue as QRCode.QRCodeErrorCorrectionLevel,
+        width: parseInt(sizeValue as string, 10),
+        margin: 2,
+        color: { dark: "#0F172A", light: "#FFFFFF" }
+      });
+      
+      return json({
+        qrCodeDataUrl,
+        error: null,
+        sourceText: textToEncode,
+        timestamp: currentTimestamp
+      } as QrCodeResponse);
+    } catch (err: any) {
+      console.error(`[ACTION] QR Code generation error:`, err.message);
+      return json({
+        error: "產生 QR Code 時發生錯誤。",
+        qrCodeDataUrl: null,
+        sourceText: textToEncode,
+        timestamp: currentTimestamp
+      } as QrCodeResponse, { status: 500 });
+    }
   }
+
+  return json({
+    error: "無效的操作。",
+    qrCodeDataUrl: null,
+    sourceText: null,
+    timestamp: currentTimestamp
+  } as QrCodeResponse, { status: 400 });
 }
 
 export default function GeneratePage() {
@@ -122,60 +135,97 @@ export default function GeneratePage() {
   const [currentDisplayData, setCurrentDisplayData] = useState<QrCodeResponse>(initialLoaderData);
   const [qrSize, setQrSize] = useState("256");
   const [errorCorrection, setErrorCorrection] = useState<QRCode.QRCodeErrorCorrectionLevel>("H");
+  const [isAutoUpdate, setIsAutoUpdate] = useState(true);
+  const [countdown, setCountdown] = useState(2);
   const imgRef = useRef<HTMLImageElement>(null);
   const submit = useSubmit();
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
-  // WebSocket connection
-  const { status: wsStatus, lastMessage, sendMessage } = useWebSocket();
-
-  // Handle WebSocket messages
-  useEffect(() => {
-    if (lastMessage?.type === 'qr_scanned' && lastMessage.data) {
-      addUiDebugMessage(`WebSocket: Received scanned QR data: ${lastMessage.data.content?.substring(0, 30)}...`);
+  // Generate new QR code client-side
+  const generateClientQR = useCallback(async () => {
+    const uuid = randomUUID();
+    const currentTime = new Date().toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    
+    const textToEncode = `${uuid}\n${currentTime}`;
+    
+    try {
+      const qrCodeDataUrl = await QRCode.toDataURL(textToEncode, {
+        errorCorrectionLevel: errorCorrection,
+        width: parseInt(qrSize, 10),
+        margin: 2,
+        color: { dark: "#0F172A", light: "#FFFFFF" }
+      });
       
-      // Generate new QR code with scanned data
-      const generateQRForScannedData = async () => {
-        try {
-          const qrCodeDataUrl = await QRCode.toDataURL(lastMessage.data.content, {
-            errorCorrectionLevel: errorCorrection,
-            width: parseInt(qrSize, 10),
-            margin: 2,
-            color: { dark: "#0F172A", light: "#FFFFFF" }
-          });
-
-          const newDisplayData: QrCodeResponse = {
-            qrCodeDataUrl,
-            sourceText: lastMessage.data.content,
-            intent: "websocket-scanned-data",
-            timestamp: Date.now(),
-            error: null
-          };
-
-          setCurrentDisplayData(newDisplayData);
-          addUiDebugMessage(`WebSocket: Updated display with scanned data QR code`);
-        } catch (error) {
-          addUiDebugMessage(`WebSocket: Failed to generate QR for scanned data: ${error}`, true);
-        }
+      const newData: QrCodeResponse = {
+        qrCodeDataUrl,
+        sourceText: textToEncode,
+        timestamp: Date.now(),
+        error: null
       };
-
-      generateQRForScannedData();
-    } else if (lastMessage?.type === 'connection') {
-      addUiDebugMessage(`WebSocket: ${lastMessage.message}`);
+      
+      setCurrentDisplayData(newData);
+      addUiDebugMessage(`自動更新 QR Code: ${textToEncode.replace('\n', ' | ')}`);
+    } catch (error) {
+      addUiDebugMessage(`產生 QR Code 失敗: ${error}`, true);
     }
-  }, [lastMessage, errorCorrection, qrSize, addUiDebugMessage]);
+  }, [errorCorrection, qrSize, addUiDebugMessage]);
+
+  // Auto-update functionality
+  useEffect(() => {
+    if (isAutoUpdate) {
+      // Start countdown
+      setCountdown(2);
+      countdownRef.current = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 1) {
+            return 2; // Reset countdown
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Auto-generate QR code every 2 seconds
+      intervalRef.current = setInterval(() => {
+        generateClientQR();
+      }, 2000);
+
+      addUiDebugMessage("自動更新已啟動 (每2秒更新一次)");
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+      addUiDebugMessage("自動更新已停止");
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, [isAutoUpdate, generateClientQR, addUiDebugMessage]);
 
   useEffect(() => {
-    addUiDebugMessage(`WebSocket status: ${wsStatus}`);
-  }, [wsStatus, addUiDebugMessage]);
-
-  useEffect(() => {
-    addUiDebugMessage(`Initial loaderData received: intent=${initialLoaderData.intent}, ts=${initialLoaderData.timestamp}`);
+    addUiDebugMessage(`Initial loaderData received: ts=${initialLoaderData.timestamp}`);
     setCurrentDisplayData(initialLoaderData);
   }, [initialLoaderData, addUiDebugMessage]);
 
   useEffect(() => {
     if (actionData) {
-      addUiDebugMessage(`Action data received: intent=${actionData.intent}, ts=${actionData.timestamp}`);
+      addUiDebugMessage(`Action data received: ts=${actionData.timestamp}`);
       if (!currentDisplayData.timestamp || (actionData.timestamp && actionData.timestamp > currentDisplayData.timestamp)) {
         addUiDebugMessage(`Updating display with actionData (ts: ${actionData.timestamp})`);
         setCurrentDisplayData(actionData);
@@ -183,30 +233,44 @@ export default function GeneratePage() {
     }
   }, [actionData, addUiDebugMessage, currentDisplayData.timestamp]);
 
-  const handleGenerateNewUuid = () => {
-    addUiDebugMessage("Button click: handleGenerateNewUuid");
-    const formData = new FormData();
-    formData.append("intent", "generate-uuid-via-action");
-    formData.append("size", qrSize);
-    formData.append("errorCorrectionLevel", errorCorrection);
-    submit(formData, { method: "post" });
+  const handleManualGenerate = () => {
+    addUiDebugMessage("手動產生 QR Code");
+    generateClientQR();
   };
+
+  const toggleAutoUpdate = () => {
+    setIsAutoUpdate(prev => !prev);
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, []);
 
   return (
     <div className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 p-6 font-sans">
       <div className="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-lg">
-        {/* WebSocket Status Indicator */}
-        <div className="mb-4 flex items-center justify-between">
+        {/* Auto-update Status */}
+        <div className="mb-4 flex items-center justify-between p-3 bg-slate-900 border border-slate-700 rounded-md">
           <div className="flex items-center space-x-2">
-            <div className={`w-3 h-3 rounded-full ${
-              wsStatus === 'connected' ? 'bg-green-500' : 
-              wsStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 
-              'bg-red-500'
-            }`}></div>
-            <span className="text-sm text-slate-400">
-              WebSocket: {wsStatus === 'connected' ? '已連接' : wsStatus === 'connecting' ? '連接中...' : '未連接'}
+            <div className={`w-3 h-3 rounded-full ${isAutoUpdate ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></div>
+            <span className="text-sm text-slate-300">
+              {isAutoUpdate ? `自動更新 (${countdown}秒後更新)` : '自動更新已暫停'}
             </span>
           </div>
+          <button
+            onClick={toggleAutoUpdate}
+            className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+              isAutoUpdate 
+                ? 'bg-red-600 hover:bg-red-700 text-white' 
+                : 'bg-green-600 hover:bg-green-700 text-white'
+            }`}
+          >
+            {isAutoUpdate ? '暫停' : '啟動'}
+          </button>
         </div>
 
         {/* Debug Log */}
@@ -223,19 +287,10 @@ export default function GeneratePage() {
 
         <header className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500 mb-2">
-            QR Code 產生器
+            自動更新 QR Code
           </h1>
           <p className="text-slate-400">
-            {currentDisplayData?.intent === "websocket-scanned-data"
-              ? "顯示最新掃描的 QR Code (即時更新)"
-              : currentDisplayData?.intent === "loader-initial-uuid" || currentDisplayData?.intent?.includes("fallback-uuid")
-              ? "初始顯示 UUID QR Code"
-              : currentDisplayData?.intent === "loader-fetch-latest"
-              ? "顯示最新掃描的 QR Code"
-              : currentDisplayData?.intent === "generate-uuid-via-action"
-              ? "顯示新產生的 UUID QR Code"
-              : "掃描資料將即時更新於此"
-            }
+            每2秒自動產生包含 UUID 和現在時間的 QR Code
           </p>
         </header>
 
@@ -277,7 +332,7 @@ export default function GeneratePage() {
 
           <button
             type="button"
-            onClick={handleGenerateNewUuid}
+            onClick={handleManualGenerate}
             className="w-full bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-cyan-500 transition-all duration-150 ease-in-out active:transform active:scale-95"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw inline-block mr-2 align-middle">
@@ -286,7 +341,7 @@ export default function GeneratePage() {
               <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
               <path d="M3 21v-5h5"/>
             </svg>
-            產生新的 UUID QR Code
+            立即產生新的 QR Code
           </button>
         </div>
 
@@ -301,21 +356,28 @@ export default function GeneratePage() {
           <div className="mt-8 text-center p-6 bg-slate-700 rounded-lg shadow-inner">
             <h3 className="text-xl font-semibold text-slate-100 mb-2">目前 QR Code：</h3>
             {currentDisplayData?.sourceText && (
-              <p className="text-xs text-slate-400 mb-3 break-all max-w-xs mx-auto">
-                內容: {currentDisplayData.sourceText}
-              </p>
+              <div className="text-xs text-slate-400 mb-4 p-3 bg-slate-800 rounded-md">
+                <p className="font-medium text-slate-300 mb-1">內容:</p>
+                <div className="space-y-1">
+                  {currentDisplayData.sourceText.split('\n').map((line, idx) => (
+                    <p key={idx} className="break-all font-mono">
+                      {idx === 0 ? `UUID: ${line}` : `時間: ${line}`}
+                    </p>
+                  ))}
+                </div>
+              </div>
             )}
             <div className="flex justify-center items-center bg-white p-2 rounded-md inline-block shadow-lg">
               <img
                 ref={imgRef}
                 src={currentDisplayData.qrCodeDataUrl}
-                alt="產生的 QR Code"
+                alt="自動產生的 QR Code"
                 className="mx-auto"
               />
             </div>
             <a
               href={currentDisplayData.qrCodeDataUrl}
-              download={`qrcode_${(currentDisplayData.sourceText?.substring(0,15).replace(/[^a-zA-Z0-9]/g, '_')) || 'generated'}.png`}
+              download={`qrcode_auto_${new Date().getTime()}.png`}
               className="mt-6 inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-700 transition-colors"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download mr-2">

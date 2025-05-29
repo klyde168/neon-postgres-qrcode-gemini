@@ -1,9 +1,8 @@
-// app/routes/scan.tsx (Updated with WebSocket support)
+// app/routes/scan.tsx (簡化版本，移除 WebSocket)
 import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
 import { Link, json } from "@remix-run/react";
 import QrScanner from "~/components/QrScanner";
 import { pool } from "~/utils/db.server";
-import { broadcastToAll } from "~/utils/websocket.server";
 
 export const meta: MetaFunction = () => {
   return [
@@ -27,24 +26,12 @@ export async function action({ request }: ActionFunctionArgs) {
       const queryText = 'INSERT INTO scanned_data(data) VALUES($1) RETURNING id, data, scanned_at';
       const res = await client.query(queryText, [scannedData]);
       
-      const result = {
+      return json({
         success: true,
         id: res.rows[0].id,
         savedData: res.rows[0].data,
         message: "資料已成功儲存到資料庫！"
-      };
-
-      // Broadcast to all WebSocket clients
-      broadcastToAll({
-        type: 'qr_scanned',
-        data: {
-          id: result.id,
-          content: result.savedData,
-          scannedAt: res.rows[0].scanned_at
-        }
       });
-
-      return json(result);
     } finally {
       client.release();
     }
@@ -63,7 +50,7 @@ export default function ScanPage() {
             QR Code 掃描器
           </h1>
           <p className="text-slate-400">
-            將 QR Code 對準相機鏡頭以進行掃描。掃描結果會即時同步到產生頁面。
+            將 QR Code 對準相機鏡頭以進行掃描。
           </p>
         </header>
 
