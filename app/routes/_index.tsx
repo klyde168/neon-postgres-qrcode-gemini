@@ -1,3 +1,4 @@
+// app/routes/_index.tsx
 import type { MetaFunction } from "@remix-run/node";
 import { Link } from "@remix-run/react";
 
@@ -66,6 +67,23 @@ export default function Index() {
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-arrow-right ml-2 transition-transform group-hover:translate-x-1"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
                 </span>
             </div>
+          </Link>
+        </div>
+
+        {/* 新增：資料庫連線測試連結 */}
+        <div className="mt-10 text-center">
+          <Link
+            to="/test-db"
+            className="group inline-flex items-center justify-center bg-slate-700 px-6 py-3 rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 hover:ring-2 hover:ring-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-database-zap text-emerald-400 mr-3 transition-transform group-hover:scale-110">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
+              <path d="M3 12A9 3 0 0 0 21 12"/>
+              <path d="M13 22V18L10 15L13 12V8"/>
+            </svg>
+            <span className="text-lg font-semibold text-slate-200">測試資料庫連線</span>
+             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-arrow-right ml-2 transition-transform group-hover:translate-x-1 text-slate-400"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
           </Link>
         </div>
       </div>
